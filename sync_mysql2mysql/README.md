@@ -13,7 +13,7 @@
 
    1.3 启动同步
 
-   python3 sync_mysql2hbase.py -conf sync_mysql2mysql.ini -debug
+   python3 sync_mysql2mysql.py -conf sync_mysql2mysql.ini -debug
 
 **二、配置文件**
 
