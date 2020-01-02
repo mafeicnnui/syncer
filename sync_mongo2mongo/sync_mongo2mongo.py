@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# @Time : 2019/1/30 9:31
-# @Author : 马飞
-# @File : sync_mysql2mongo.py
+# @Time    : 2019/1/30 9:31
+# @Author  : 马飞
+# @File    : sync_mysql2mongo.py
 # @Software: PyCharm
-# @flunc   :多线程程同步
+# @Func    : MongoDB->MOngoDB_Replia_Set
 
 import sys,time
 import traceback
@@ -15,9 +15,8 @@ from bson.objectid import ObjectId
 import json
 import datetime
 import smtplib
-from   email.mime.text import MIMEText
-from   dateutil import parser
-import threading
+from email.mime.text import MIMEText
+from dateutil import parser
 
 def send_mail465(p_from_user,p_from_pass,p_to_user,p_title,p_content):
     to_user=p_to_user.split(",")
@@ -66,6 +65,21 @@ def get_ds_mongo_auth(mongodb_str):
     db.authenticate(user, password)
     return db
 
+def get_ds_mongo_auth_replset(mongodb_str,replset_name):
+    ip            = mongodb_str.split(':')[0]
+    port          = mongodb_str.split(':')[1]
+    service       = mongodb_str.split(':')[2]
+    user          = mongodb_str.split(':')[3]
+    password      = mongodb_str.split(':')[4]
+    replstr       = ''
+    for v in range(len(ip.split(','))):
+        replstr=replstr+'{0}:{1},'.format(ip.split(',')[v],port.split(',')[v])
+        print('replstr=',replstr)
+    conn          = pymongo.MongoClient('mongodb://{0},replicaSet={1}'.format(replstr[0:-1],replset_name))
+    db            = conn[service]
+    db.authenticate(user, password)
+    return db
+
 def get_ds_mongo(mongodb_str):
     print('get_ds_mongo=A')
     ip            = mongodb_str.split(':')[0]
@@ -84,6 +98,7 @@ def get_ds_mongo_str(mongodb_str):
     service       = mongodb_str.split(':')[2]
     return 'MongoDB:{0}:{1}/{2}'.format(ip,port,service)
 
+
 def get_config(fname):
     config = {}
     cfg=configparser.ConfigParser()
@@ -96,11 +111,10 @@ def get_config(fname):
     config['sync_table']               = cfg.get("sync", "sync_table")
     config['batch_size']               = cfg.get("sync", "batch_size")
     config['sync_time_type']           = cfg.get("sync", "sync_time_type")
-    config['sync_thread_number']       = cfg.get("sync", "sync_thread_number")
-
+    config['replset_name']             = cfg.get("sync", "replset_name")
     #get mongodb db
     config['db_mongo_from']            = get_ds_mongo_auth(cfg.get("sync", "db_mongo_from"))
-    config['db_mongo_to']              = get_ds_mongo_auth(cfg.get("sync", "db_mongo_to"))
+    config['db_mongo_to']              = get_ds_mongo_auth_replset(cfg.get("sync", "db_mongo_to"),config['replset_name'])
     config['db_mongo_from_str']        = get_ds_mongo_str(cfg.get("sync", "db_mongo_from"))
     config['db_mongo_to_str']          = get_ds_mongo_str(cfg.get("sync", "db_mongo_to"))
     return config
@@ -109,29 +123,34 @@ def get_seconds(b):
     a=datetime.datetime.now()
     return int((a-b).total_seconds())
 
+def format_table(sync_tab):
+    v_line     = ''
+    v_lines    = ''
+    i_counter  = 0
+    v_space    = ' '.ljust(25,' ')
+    for tab in  sync_tab.split(","):
+        v_line    = v_line+tab+','
+        i_counter = i_counter+1
+        if i_counter%5==0:
+           if i_counter==5:
+              v_lines = v_lines + v_line[0:-1] + '\n'
+              v_line  = ''
+           else:
+              v_lines = v_lines +v_space+ v_line[0:-1] + '\n'
+              v_line  = ''
+    v_lines = v_lines + v_space+v_line[0:-1]
+    return v_lines
+
 def print_dict(config):
     print('-'.ljust(125,'-'))
     print(' '.ljust(3,' ')+"name".ljust(20,' ')+'value')
     print('-'.ljust(125,'-'))
     for key in config:
-      print(' '.ljust(3,' ')+key.ljust(20,' ')+'=',config[key])
+        if key=='sync_table':
+           print(' '.ljust(3, ' ') + key.ljust(20, ' ') + '=', format_table(config[key]))
+        else:
+           print(' '.ljust(3,' ')+key.ljust(20,' ')+'=',config[key])
     print('-'.ljust(125,'-'))
-
-
-def print_dict_threads(config):
-    v=''
-    print('\033[1;32;40mTime:{0}\033[0m'.format(get_time()))
-    print('-'.ljust(125, '-'))
-    print(' '.ljust(3, ' ') + 'thread_id'.ljust(12, ' ')+ 'status'.ljust(14, ' ')+'message'.ljust(150, ' '))
-
-    print('-'.ljust(125, '-'))
-    for key in config:
-      if config[key]['status']=='running':
-         v=v+' '.ljust(3, ' ') \
-            +config[key]['id'].ljust(12,' ')\
-            +config[key]['status'].ljust(14,' ')\
-            +config[key]['msg']+'\n'
-    print("\r{0}\n".format(v))
 
 
 def format_sql(v_sql):
@@ -140,8 +159,8 @@ def format_sql(v_sql):
 def init(config,debug):
     config = get_config(config)
     #print dict
-    if debug:
-       print_dict(config)
+    #if debug:
+    print_dict(config)
     return config
 
 def check_mongo_tab_exists(db,tab):
@@ -153,7 +172,6 @@ def check_mongo_tab_exists(db,tab):
          return True
     except:
       return False
-
 
 def get_mongo_incr_where(config,tab):
     v_rq  = ''
@@ -178,6 +196,26 @@ def get_mongo_incr_where(config,tab):
     v_json = {v_col: {"$gte": v_rq}}
     return v_json
 
+
+def get_mongo_full_where(tab):
+    v_rq  = ''
+    v_day = tab.split(':')[2]
+    if v_day =='':
+       return {}
+
+    n_day = int(tab.split(':')[2])
+    v_col = tab.split(':')[1]
+
+    v_str = '2019-12-01'
+    v_rq  = datetime.datetime.strptime(v_str,'%Y-% m-%d')
+    d_rq  = v_rq.strftime('%Y-%m-%dT%H:%M:%S.00Z')
+
+    if d_rq =='':
+       return {}
+
+    d_rq = parser.parse(d_rq)
+    v_json = {v_col: {"$gte": d_rq}}
+    return v_json
 
 def get_mongo_incr_where_pk(tab):
     v_day = tab.split(':')[2]
@@ -205,13 +243,12 @@ def write_pk(config,tabs):
     n_totals        = results.count()
     i_counter       = 1
     start_time      = datetime.datetime.now()
-
     #init t_pk
     db_mongodb_to.drop_collection('t_pk')
     db_mongodb_to.create_collection('t_pk')
     print('{0} create table {1} complete!'.format(config['db_mongo_to_str'], 't_pk'))
 
-    # write t_pk
+    #write t_pk
     print('{0} insert table {1} ,please wait!'.format(config['db_mongo_to_str'], 't_pk'))
     for dic in results:
         #print("""db.t_pk.insert("id":'{0}',"counter": {1})""".format(dic['_id'], i_counter))
@@ -224,221 +261,100 @@ def write_pk(config,tabs):
             #sys.exit(0)
     print('{0} {1} insert {2} rows ok!'.format(config['db_mongo_to_str'], 't_pk',str(n_totals)))
 
-def full_sync(config,tabs,threads_env,thread_id):
-    threads_env[thread_id]['status'] = 'running'
+def full_sync(config):
     #process
     db_mongodb_from      = config['db_mongo_from']
     db_mongodb_to        = config['db_mongo_to']
-    config_init          = {}
-    start_time           = datetime.datetime.now()
-    n_batch              = int(config['batch_size'])
-    tab                  = tabs.split(':')[0]
-    config_init[tab]     = False
-    cur_mongo_from       = db_mongodb_from[tab]
-    cur_mongo_to         = db_mongodb_to[tab]
-    results              = cur_mongo_from.find()
-    n_totals             = results.count()
-    threads_env[thread_id]['msg']=thread_id
-    if n_totals > 0 :
-       if not check_mongo_tab_exists(db_mongodb_to,tab):
-           threads_env[thread_id]['msg'] = 'Full sync table:{0},please wait...'.format(tab)
-           config_init[tab] = True
-           i_counter = 0
-           mylist    = []
-           mylist_id = []
-           cur_mongo_to.drop()
-           for r in results:
-               mylist.append(r)
-               mylist_id.append(r['_id'])
-               cur_mongo_to.insert(r)
-               i_counter = i_counter + 1
-               if i_counter % n_batch == 0:
-                   cur_mongo_to.remove({"_id": {'$in': mylist_id}})
-                   cur_mongo_to.insert(mylist)
-                   mylist = []
-                   mylist_id = []
-                   threads_env[thread_id]['msg'] ="Full sync Table:{0},Total :{1},Process :{2},Complete:{3}%,elapse:{4}s".\
-                              format(tab, n_totals, i_counter,round(i_counter / n_totals * 100, 2),str(get_seconds(start_time)))
-           cur_mongo_to.remove({"_id": {'$in': mylist_id}})
-           cur_mongo_to.insert(mylist)
-           threads_env[thread_id]['msg'] = "Full sync Table:{0},Total :{1},Process :{2},Complete:{3}%,elapse:{4}s".\
-                       format(tab, n_totals, i_counter,round(i_counter / n_totals * 100, 2),str(get_seconds(start_time)))
-       else:
-          threads_env[thread_id]['msg'] = 'Full sync Table {0} already exists,skip full sync!'.format(tab)
-    else:
-       db_mongodb_to.drop_collection(tab)
-       db_mongodb_to.create_collection(tab)
-       threads_env[thread_id]['msg'] ='Table {0} sync 0 records!'.format(tab)
-    threads_env[thread_id]['status'] = 'stopped'
+    for tabs in config['sync_table'].split(","):
+        start_time       = datetime.datetime.now()
+        n_batch          = int(config['batch_size'])
+        tab              = tabs.split(':')[0]
+        cur_mongo_from   = db_mongodb_from[tab]
+        cur_mongo_to     = db_mongodb_to[tab]
+        results          = cur_mongo_from.find()
+        n_totals         = results.count()
 
-def increment_sync(config,tabs,threads_env,thread_id):
-    threads_env[thread_id]['status'] = 'running'
-    #process
+        if n_totals > 0 :
+           if not check_mongo_tab_exists(db_mongodb_to,tab):
+               print('{0} Full sync table:{1},please wait...'.format(get_time(),tab))
+               i_counter = 0
+               mylist    = []
+               mylist_id = []
+               cur_mongo_to.drop()
+               for r in results:
+                   mylist.append(r)
+                   mylist_id.append(r['_id'])
+                   cur_mongo_to.insert(r)
+                   i_counter = i_counter + 1
+                   if i_counter % n_batch == 0:
+                       cur_mongo_to.remove({"_id": {'$in': mylist_id}})
+                       cur_mongo_to.insert(mylist)
+                       mylist = []
+                       mylist_id = []
+                       print("\r{0} Full sync Table:{1},Total :{2},Process :{3},Complete:{4}%,elapse:{5}s"
+                             .format(get_time(),tab, n_totals, i_counter,
+                                     round(i_counter / n_totals * 100, 2),
+                                     str(get_seconds(start_time))), end='')
+
+               cur_mongo_to.remove({"_id": {'$in': mylist_id}})
+               cur_mongo_to.insert(mylist)
+               print("\r{0} Full sync Table:{1},Total :{2},Process :{3},Complete:{4}%,elapse:{5}s"
+                     .format(get_time(),tab, n_totals, i_counter,
+                             round(i_counter / n_totals * 100, 2),
+                             str(get_seconds(start_time))), end='')
+               print('')
+           else:
+              print('{0} Full sync Table: {1} already exists date,skip full sync!'.format(get_time(), tab))
+        else:
+           db_mongodb_to.drop_collection(tab)
+           db_mongodb_to.create_collection(tab)
+           print('{0} Full sync Table {1} sync 0 records!'.format(get_time(),tab))
+
+def increment_sync(config):
     db_mongodb_from    = config['db_mongo_from']
     db_mongodb_to      = config['db_mongo_to']
-    start_time         = datetime.datetime.now()
-    n_batch            = int(config['batch_size'])
-    tab                = tabs.split(':')[0]
-    day                = tabs.split(':')[2]
-    cur_mongo_from     = db_mongodb_from[tab]
-    cur_mongo_to       = db_mongodb_to[tab]
-    v_where            = get_mongo_incr_where(config,tabs)
-    results            = cur_mongo_from.find(v_where)
-    n_totals           = results.count()
+    for tabs in config['sync_table'].split(","):
+        start_time     = datetime.datetime.now()
+        n_batch        = int(config['batch_size'])
+        tab            = tabs.split(':')[0]
+        day            = tabs.split(':')[2]
+        cur_mongo_from = db_mongodb_from[tab]
+        cur_mongo_to   = db_mongodb_to[tab]
+        v_where        = get_mongo_incr_where(config,tabs)
+        #print('increment_sync=',increment_sync)
+        results        = cur_mongo_from.find(v_where)
+        n_totals       = results.count()
+        if n_totals > 0 :
+            print('{0} Increment sync table:{1},please wait...'.format(get_time(),tab))
+            #if check_mongo_tab_exists(db_mongodb_to, tab):
+            i_counter = 0
+            mylist    = []
+            mylist_id = []
+            for r in results:
+                mylist.append(r)
+                mylist_id.append(r['_id'])
+                i_counter = i_counter + 1
+                if i_counter % n_batch == 0:
+                    cur_mongo_to.remove({"_id": {'$in': mylist_id}})
+                    cur_mongo_to.insert(mylist)
+                    mylist = []
+                    mylist_id = []
+                    print("\r{0} Increment sync Table:{1},Total :{2},Process :{3},Complete:{4}%,elapse:{5}s"
+                          .format(get_time(),tab, n_totals, i_counter,
+                                  round(i_counter / n_totals * 100, 2),
+                                  str(get_seconds(start_time))), end='')
 
-    if n_totals > 0  :
-        threads_env[thread_id]['msg']='Increment sync table:{0},please wait...'.format(tab)
-        i_counter = 0
-        mylist = []
-        mylist_id = []
-        for r in results:
-            mylist.append(r)
-            mylist_id.append(r['_id'])
-            i_counter = i_counter + 1
-            if i_counter % n_batch == 0:
-                cur_mongo_to.remove({"_id": {'$in': mylist_id}})
-                cur_mongo_to.insert(mylist)
-                mylist = []
-                mylist_id = []
-                threads_env[thread_id]['msg']="Increment sync Table:{0},Total :{1},Process :{2},Complete:{3}%,elapse:{4}s".\
-                            format(tab, n_totals, i_counter,round(i_counter / n_totals * 100, 2),str(get_seconds(start_time)))
-        cur_mongo_to.remove({"_id": {'$in': mylist_id}})
-        cur_mongo_to.insert(mylist)
-        threads_env[thread_id]['msg'] ="Increment sync Table:{0},Total :{1},Process :{2},Complete:{3}%,elapse:{4}s".\
-                    format(tab, n_totals, i_counter,round(i_counter / n_totals * 100, 2),str(get_seconds(start_time)))
-    else:
-        if day != '':
-           threads_env[thread_id]['msg'] ='Increment sync Table:{0} recent {1} {2} no found data,skip increment sync!'.\
-                      format(tab, day, config['sync_time_type'])
+            cur_mongo_to.remove({"_id": {'$in': mylist_id}})
+            cur_mongo_to.insert(mylist)
+            print("\r{0} Increment sync Table:{1},Total :{2},Process :{3},Complete:{4}%,elapse:{5}s"
+                  .format(get_time(),tab, n_totals, i_counter,
+                          round(i_counter / n_totals * 100, 2),
+                          str(get_seconds(start_time))), end='')
+            print('')
         else:
-           threads_env[thread_id]['msg'] = 'Increment sync Table:{0}  no found data,skip increment sync!'.format(tab)
-    threads_env[thread_id]['status'] = 'stopped'
-
-def monitor_thread(config):
-    print('print thread running status...')
-    time.sleep(1)
-    while True:
-       i_counter = 0
-       for key in list(config.keys()):
-           if config[key]['status'] == 'completed':
-              i_counter=i_counter+1
-
-           if config[key]['status']=='running':
-               print_dict_threads(config)
-               time.sleep(10)
-               break
-
-       if i_counter==len(config):
-          print('all thread end,exit!')
-          break
-
-def sync_multi_thread_full(config):
-    #init threads variables
-    threads_env = {}
-    threads = []
-    i_thread_counter = 0
-
-    #add full sync to thread
-    for tabs in config['sync_table'].split(","):
-        tab = tabs.split(':')[0]
-        thread_id = 'thread' + str(i_thread_counter)
-        threads_env[thread_id] = {'id': thread_id, 'name': 'full_sync_' + tab, 'status': 'init', 'msg': ''}
-        thread = threading.Thread(target=full_sync, args=(config, tabs, threads_env, thread_id,))
-        threads.append(thread)
-        i_thread_counter = i_thread_counter + 1
-
-    #for i in range(len(threads)):
-    #    print(threads[i],threads_env['thread'+str(i)])
-
-    #set thread number
-    if int(config['sync_thread_number'])> len(config['sync_table'].split(",")):
-        config['sync_thread_number']=len(config['sync_table'].split(","))
-
-    #monitor thread
-    if int(config['sync_thread_number'])!=0:
-        t = threading.Thread(target=monitor_thread, args=(threads_env,))
-        t.start()
-
-    for i in range(0, int(config['sync_thread_number'])):
-        threads[i].start()
-
-    #runnint others threads,max three
-    i = int(config['sync_thread_number'])
-    if i!=0:
-        while True:
-            for key in list(threads_env.keys()):
-                if threads_env[key]['status'] == 'stopped':
-                   threads_env[key]['status'] = 'completed'
-                   if i != i_thread_counter:
-                        threads[i].start()
-                        i = i + 1
-                        break
-            time.sleep(1)
-            if i == i_thread_counter:
-                break
-
-        for i in range(0, i_thread_counter):
-            threads[i].join()
-        print('all Done at :', get_time())
-
-    #print('print threads_env...')
-    #print_dict(threads_env)
-
-
-def sync_multi_thread_incr(config):
-    #init threads variables
-    threads_env = {}
-    threads = []
-    i_threads_running = 0
-    i_thread_counter  = 0
-
-    #add incr sync to thread
-    for tabs in config['sync_table'].split(","):
-        tab = tabs.split(':')[0]
-        thread_id = 'thread' + str(i_thread_counter)
-        threads_env[thread_id] = {'id':thread_id,'name':'incr_sync_'+tab,'status': 'init','msg':''}
-        thread = threading.Thread(target=increment_sync, args=(config, tabs,threads_env,thread_id,))
-        i_thread_counter = i_thread_counter + 1
-        threads.append(thread)
-
-    #for i in range(len(threads)):
-    #    print(threads[i],threads_env['thread'+str(i)])
-
-    #set thread number
-    if int(config['sync_thread_number']) > len(config['sync_table'].split(",")):
-        config['sync_thread_number'] = len(config['sync_table'].split(","))
-
-    #monitor thread
-    if int(config['sync_thread_number']) != 0:
-        t = threading.Thread(target=monitor_thread, args=(threads_env,))
-        t.start()
-
-    #run thread for sync_thread_number
-    for i in range(0, int(config['sync_thread_number'])):
-        threads[i].start()
-        i_threads_running=i_threads_running+1
-
-    #runnint others threads,max three
-    i = int(config['sync_thread_number'])
-    if i != 0:
-        while True:
-            for key in list(threads_env.keys()):
-                if threads_env[key]['status'] == 'stopped':
-                    threads_env[key]['status'] = 'completed'
-                    if i != i_thread_counter:
-                        threads[i].start()
-                        i = i + 1
-                        break
-            time.sleep(1)
-            if i == i_thread_counter:
-                break
-
-        for i in range(0, i_thread_counter):
-            threads[i].join()
-        print('all Done at :', get_time())
-
-    #print('print threads_env...')
-    #print_dict(threads_env)
+            if day != '':
+               print('{0} Increment sync Table:{1} recent {2} {3} no found data,skip increment sync!'.
+                      format(get_time(), tab, day,config['sync_time_type']))
 
 def main():
     #init variable
@@ -455,11 +371,13 @@ def main():
     #read config
     config=init(config,debug)
 
-    #sync_multi_thread_full
-    sync_multi_thread_full(config)
+    #full sync
+    print("\033[1;32;40m{0} Full Sync data,please wait!\033[0m".format(get_time()))
+    full_sync(config)
 
-    #sync_multi_thread_incr
-    sync_multi_thread_incr(config)
+    #incr sync
+    print("\033[1;32;40m{0} Increment Sync data,please wait!\033[0m".format(get_time()))
+    increment_sync(config)
 
 if __name__ == "__main__":
      main()
