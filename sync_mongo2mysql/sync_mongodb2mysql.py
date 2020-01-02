@@ -1,10 +1,9 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # @Time    : 2019/1/30 9:31
 # @Author  : 马飞
 # @File    : sync_mysql2mongo.py
 # @Software: PyCharm
-# @Func    : optimizer create table
+# @Func    : optimizer bulk insert
 
 import sys,time
 import traceback
@@ -60,9 +59,34 @@ def get_ds_mysql(ip,port,service ,user,password):
                            cursorclass = pymysql.cursors.DictCursor)
     return conn
 
-def get_ds_mongo(ip,port,service):
-    conn = pymongo.MongoClient(host=ip, port=int(port))
-    return conn[service]
+def get_ds_mongo(mongodb_str):
+    ip            = mongodb_str.split(':')[0]
+    port          = mongodb_str.split(':')[1]
+    service       = mongodb_str.split(':')[2]
+    user          = mongodb_str.split(':')[3]
+    password      = mongodb_str.split(':')[4]
+    conn          = pymongo.MongoClient(host=ip, port=int(port))
+    db            = conn[service]
+    db.authenticate(user, password)
+    return db
+
+def get_ds_mongo_auth(mongodb_str):
+    ip            = mongodb_str.split(':')[0]
+    port          = mongodb_str.split(':')[1]
+    service       = mongodb_str.split(':')[2]
+    user          = mongodb_str.split(':')[3]
+    password      = mongodb_str.split(':')[4]
+    conn          = pymongo.MongoClient('mongodb://{0}:{1}/'.format(ip,int(port)))
+    db            = conn[service]
+    db.authenticate(user, password)
+    return db
+
+def get_ds_mongo_str(mongodb_str):
+    ip            = mongodb_str.split(':')[0]
+    port          = mongodb_str.split(':')[1]
+    service       = mongodb_str.split(':')[2]
+    return 'MongoDB:{0}:{1}/{2}'.format(ip,port,service)
+
 
 def get_config(fname):
     config = {}
@@ -91,15 +115,21 @@ def get_config(fname):
     config['db_mysql_pass']            = db_mysql_pass
     config['db_mysql_string']          = db_mysql_ip + ':' + db_mysql_port + '/' + db_mysql_service
     config['db_mysql']                 = get_ds_mysql(db_mysql_ip, db_mysql_port, db_mysql_service, db_mysql_user, db_mysql_pass)
+
     #get mongodb parameter
     db_mongo                           = cfg.get("sync", "db_mongo")
     db_mongo_ip                        = db_mongo.split(':')[0]
     db_mongo_port                      = db_mongo.split(':')[1]
     db_mongo_service                   = db_mongo.split(':')[2]
+    db_mongo_user                      = db_mongo.split(':')[3]
+    db_mongo_password                  = db_mongo.split(':')[4]
     config['db_mongo_ip']              = db_mongo_ip
     config['db_mongo_port']            = db_mongo_port
     config['db_mongo_service']         = db_mongo_service
-    config['db_mongo']                 = get_ds_mongo(db_mongo_ip, db_mongo_port, db_mongo_service)
+    config['db_mongo_user']            = db_mongo_user
+    config['db_mongo_password']        = db_mongo_password
+    config['db_mongo']                 = get_ds_mongo(cfg.get("sync", "db_mongo"))
+    config['db_mongo_str']             = get_ds_mongo_str(cfg.get("sync", "db_mongo"))
     return config
 
 def get_seconds(b):
@@ -135,9 +165,6 @@ def print_dict(config):
            print(' '.ljust(3,' ')+key.ljust(20,' ')+'=',config[key])
     print('-'.ljust(125,'-'))
 
-def format_sql(v_sql):
-    return v_sql.replace("\\","\\\\").replace("'","\\'")
-
 def init(config,debug):
     config = get_config(config)
     #print dict
@@ -165,50 +192,71 @@ def get_col_len(db,tab,col,gather_rows):
     results = c1.find({col:{"$exists":"true"}},{col:1}).limit(int(gather_rows))
     n_len   = 0
     for rec in results:
-        #print(rec,rec[col])
         if len(str(rec[col]))>n_len:
-           n_len=len(str(rec[col]))*2
+           n_len=len(str(rec[col]))*3+500
     return n_len
 
 def get_col_type(db,tab,col,gather_rows):
-    c1           = db[tab]
-    results      = c1.find({col:{"$exists":"true"}},{col:1}).limit(int(gather_rows))
-    i_int_counter= 0
-    i_str_counter= 0
-    i_rq_counter = 0
+    c1            = db[tab]
+    results       = c1.find({col:{"$exists":"true"}},{col:1}).limit(int(gather_rows))
+    i_int_counter = 0
+    i_dec_counter = 0
+    i_str_counter = 0
+    i_rq_counter  = 0
+    i_str_length  = 0
 
     for rec in results:
-        #print(col,str(rec[col]),str(rec[col]).isdigit(),str(rec[col]).count(','))
         if str(rec[col]).isdigit() and str(rec[col]).count(',')==0 :
-            i_int_counter=i_int_counter+1
+            i_int_counter = i_int_counter+1
+        elif is_number(str(rec[col])) and str(rec[col]).count(',') == 0 and str(rec[col]).count('_') == 0:
+            i_dec_counter = i_dec_counter + 1
         elif is_valid_date(str(rec[col])):
-            i_rq_counter=i_rq_counter+1
+            i_rq_counter  = i_rq_counter+1
         else:
-            i_str_counter=i_str_counter+1
+            i_str_counter = i_str_counter+1
+            if col!='_id':
+               i_str_length  = i_str_length if i_str_length >= len(str(rec[col])) else 3*len(str(rec[col]))+500
+            else:
+               i_str_length = i_str_length if i_str_length >= len(str(rec[col])) else 3*len(str(rec[col]))
 
     if i_str_counter>0:
-       if get_col_len(db,tab,col,gather_rows)<4000:
-          return 'varchar'
-       elif get_col_len(db, tab, col,gather_rows)< 8000:
-          return 'text'
+       if i_str_length<4000:
+          return '{0}:{1}:{2}'.format('varchar',str(i_str_length),'0')
+       elif i_str_length< 8000:
+          return '{0}:{1}:{2}'.format('text',str(i_str_length),'0')
        else:
-          return 'longtext'
+          return '{0}:{1}:{2}'.format('longtext',str(i_str_length),'0')
 
-    if i_int_counter>0 and i_str_counter==0 and i_rq_counter==0:
-       return 'bigint'
+    if i_int_counter>0 and i_dec_counter==0 and  i_str_counter==0 and i_rq_counter==0:
+       return '{0}:{1}:{2}'.format('bigint', '0', '0')
 
-    if i_rq_counter>0 and i_int_counter==0 and i_str_counter==0:
+    if i_dec_counter>0 and i_int_counter==0 and i_str_counter==0 and i_rq_counter==0:
+       return '{0}:{1}:{2}'.format('decimal', '40', '4')
+
+    if i_rq_counter>0 and i_dec_counter==0 and i_int_counter==0 and i_str_counter==0:
+       return '{0}:{1}:{2}'.format('datetime', '0', '0')
        return 'datetime'
 
 def is_number(str):
   try:
-    # 因为使用float有一个例外是'NaN'
+    #因为使用float有一个例外是'NaN'
     if str=='NaN':
       return False
     float(str)
     return True
   except ValueError:
     return False
+
+def get_tab_desc(db,tab, where):
+    desc = set()
+    dict = {}
+    c1 = db[tab]
+    results = c1.find(where)
+    for rec in results:
+        for key in rec:
+            desc.add(key)
+            dict[key]=''
+    return dict
 
 ######################################################################
 #
@@ -217,15 +265,23 @@ def is_number(str):
 #  3.逐条遍历以后每一条数据，动态修改key的长度，及类型统计
 #
 ######################################################################
-def get_tab_ddl2(db,tab, where,gather_rows,debug):
+def get_tab_ddl2(db,tab, where,gather_rows,n_batch,debug):
     desc       = set()
     stats      = {}
     c1         = db[tab]
     start_time = datetime.datetime.now()
     r_counter  = 0
-    results    = c1.find(where).limit(gather_rows)
-    n_totals   = gather_rows     #results.count()
-    print('begin calc column...')
+    results    = ''
+    n_totals   = 0
+
+    if gather_rows==0:
+       results  = c1.find()
+       n_totals = results.count()
+    else:
+       results  = c1.find(where).limit(gather_rows)
+       n_totals = gather_rows
+
+    print('starting analyze table:{0} column type and length...'.format(tab))
     for rec in results:
         r_counter = r_counter + 1
         for key in rec:
@@ -273,20 +329,20 @@ def get_tab_ddl2(db,tab, where,gather_rows,debug):
                            'v_max_len':v_max_len,
                            'i_counter':i_counter,
                            'f_counter':f_counter,
-                           'f_prec'   : f_prec
+                           'f_prec'   :f_prec
                            }
-            if  r_counter % 1000 ==0 :
+            if  r_counter % n_batch ==0 :
                 print('\rComputing table:{0} column type and length,process:{1}/{2} ,Complete:{3}%,elapse:{4}s'.
                          format(tab,n_totals,r_counter,
                                 round(r_counter / n_totals * 100, 2),
                                 str(get_seconds(start_time))),end='')
 
-    print('\rComputing table:{0} column type and length,process:{1}/{2} ,Complete:{3}%,elapse:{4}s'.
+    print('\rComputing table:{0} column type and len,process:{1}/{2} ,Complete:{3}%,elapse:{4}s'.
           format(tab, n_totals, r_counter,
                  round(r_counter / n_totals * 100, 2),
                  str(get_seconds(start_time))), end='')
     print('')
-    print('end calc column,elapse time:{0}'.format(str(get_seconds(start_time))))
+    print('end calc column,elapse time:{0}s'.format(str(get_seconds(start_time))))
     #output dict stats
     if debug:
        print_dict(stats)
@@ -329,9 +385,8 @@ def get_tab_ddl2(db,tab, where,gather_rows,debug):
                                                                                   d_desc[key]['scale'])
         else:
             v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + d_desc[key]['type'] + ',\n'
-    v_ddl = v_ddl[0:-2] + '\n' + ')'
+    v_ddl = v_ddl[0:-2] + '\n,primary key(_id)\n' + ')'
     return v_ddl
-
 
 def get_tab_ddl(db,tab,where,gather_rows,debug):
     desc  = set()
@@ -339,33 +394,60 @@ def get_tab_ddl(db,tab,where,gather_rows,debug):
     lens  = {}
     types = {}
     c1    = db[tab]
-    for rec in c1.find(where):
+
+    if gather_rows == 0:
+        results  = c1.find()
+        n_totals = results.count()
+    else:
+        results  = c1.find(where).limit(gather_rows)
+        n_totals = gather_rows
+
+    print('Gathering table:{0} column,please wait!'.format(tab))
+    start_time = datetime.datetime.now()
+    for rec in results:
        for key in rec:
            desc.add(key)
+    print('Gathering table:{0} column complete,elaspse:{1}s'.format(tab,str(get_seconds(start_time))))
 
     desc = list(desc)
     desc.remove('_id')
     cols.extend(desc)
-    print('Get table {0} column length,please wait!'.format(tab))
+    '''
+    print('Gathering table {0} column length,please wait!'.format(tab))
+    start_time = datetime.datetime.now()
     for col in cols:
-        lens[col] = get_col_len(db, tab, col,gather_rows)
+        begin_time = datetime.datetime.now()
+        lens[col] = get_col_len(db, tab, col,n_totals)
         if debug:
-           print('Table {0} column {1} length is {2}'.format(tab,col,str(lens[col])))
+           print('Gathering table:{0} column:{1} len is: {2},elaspse:{3}s'.
+                     format(tab, col, lens[col],str(get_seconds(begin_time))))
+           print('Gathering table {0} column length,elaspse time:{1}s'.format(tab,str(get_seconds(start_time))))
+    '''
 
-    print('Get table {0} column type,please wait!'.format(tab))
+    print('Gathering table {0} column properties,please wait!'.format(tab))
+    start_time = datetime.datetime.now()
     for col in cols:
-        types[col] = get_col_type(db, tab, col,gather_rows)
+        begin_time = datetime.datetime.now()
+        types[col] = get_col_type(db, tab, col,n_totals)
         if debug:
-           print('Table {0} column {1} length is {2}'.format(tab, col, types[col]))
+            print('Gathering table:{0} column:{1} properties is:{2},elaspse:{3}s'.
+                     format(tab, col, types[col],str(get_seconds(begin_time))))
 
     v_pre = ' '.ljust(5, ' ')
     v_ddl = 'create table {0} (\n'.format(tab)
     for key in cols:
-        if types[key]=='varchar':
-           v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + '{0}({1}),\n'.format(types[key],str(lens[key]))
+
+        v_type=types[key].split(':')[0]
+        v_len =types[key].split(':')[1]
+        v_prec=types[key].split(':')[2]
+
+        if v_type=='varchar':
+           v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + '{0}({1}),\n'.format(v_type,v_len)
+        elif v_type=='decimal':
+           v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + '{0}({1},{2}),\n'.format(v_type, v_len,v_prec)
         else:
-           v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + types[key] + ',\n'
-    v_ddl = v_ddl[0:-2] + '\n' + ')'
+           v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + v_type + ',\n'
+    v_ddl = v_ddl[0:-2] + '\n,primary key(_id)\n' + ')'
     return v_ddl
 
 def check_mysql_tab_exists(db,tab):
@@ -405,20 +487,53 @@ def get_ins_header(db,tab,val):
     v_ddl=v_ddl[0:-1]+')'
     return v_ddl
 
+def get_ins_header2(tab,dic):
+    v_ddl = 'insert into {0} ('.format(tab)
+    for key in dic:
+        v_ddl = v_ddl + key + ','
+    v_ddl = v_ddl[0:-1] + ')'
+    return
+
 def get_ins_values(dic):
     v_tmp=''
     for key in dic:
         v_tmp=v_tmp+"'"+format_sql(str(dic[key]))+"',"
     return v_tmp[0:-1]
 
+def get_key(dict,key):
+    try:
+        return format_sql(str(dict[key]))
+    except:
+        return 'null'
+
+def get_ins_values2(desc,dic):
+    v_ret = '('
+    for key in desc:
+        if get_key(dic,key)=='null':
+           v_ret = v_ret + 'null,'
+        else:
+           v_ret = v_ret +"'"+get_key(dic,key) + "',"
+    v_ddl = v_ret[0:-1] + ')'
+    return v_ddl
+
+
 def get_mongo_where(db,p_start,p_end):
+    cur_mysql = db.cursor()
+    cur_mysql.execute('select _id from t_pk where id between {0} and {1}'.format(p_start,p_end))
+    v_ids     = []
+    rs_mysql  = cur_mysql.fetchall()
+    for dic in list(rs_mysql):
+        v_ids.append(ObjectId(dic['_id']))
+    return v_ids
+
+def get_mysql_where(db,p_start,p_end):
     cur_mysql  = db.cursor()
     cur_mysql.execute('select _id from t_pk where id between {0} and {1}'.format(p_start,p_end))
     v_ids    = []
     rs_mysql = cur_mysql.fetchall()
     for dic in list(rs_mysql):
-        v_ids.append(ObjectId(dic['_id']))
-    return v_ids
+        v_ids.append("'{0}'".format(dic['_id']))
+    return ','.join(v_ids)
 
 def get_mongo_incr_where_old(tab):
     v_day = tab.split(':')[2]
@@ -456,6 +571,8 @@ def init_tmp_tab(config):
         print('MySQL:{0},t_pk temp table created!'.format(config['db_mysql_string']))
     cur_mysql.close()
 
+
+
 def main():
     #init variable
     config = ""
@@ -479,24 +596,24 @@ def main():
     init_tmp_tab(config)
 
     for tabs in config['sync_table'].split(","):
-        tab       = tabs.split(':')[0]
-        cur_mongo = db_mongodb[tab]
-        v_where   = get_mongo_incr_where(tabs)
-        results   = cur_mongo.find(v_where)
-        n_totals  = results.count()
-        n_batch   = int(config['batch_size'])
-        n_gather_rows   = int(config['gather_rows'])
+        tab            = tabs.split(':')[0]
+        cur_mongo      = db_mongodb[tab]
+        v_where        = get_mongo_incr_where(tabs)
+        results        = cur_mongo.find(v_where)
+        n_totals       = results.count()
+        n_batch        = int(config['batch_size'])
+        n_gather_rows  = int(config['gather_rows'])
+
         if n_totals == 0:
            print("Table:{0} 0 rows,skip sync!".format(tab))
            continue
 
         # create tables
         if check_mysql_tab_exists(db_mysql,tab)==0:
-            v_ddl =get_tab_ddl2(db_mongodb,tab,v_where,n_gather_rows,config['debug'])
+            v_ddl = get_tab_ddl2(db_mongodb,tab,v_where,n_gather_rows,n_batch,config['debug'])
+            #v_ddl = get_tab_ddl(db_mongodb,tab,v_where,n_gather_rows,config['debug'])
             if config['debug']:
                print(v_ddl)
-            #sys.exit(0)
-            #v_ddl = get_tab_ddl(db_mongodb,tab,v_where,n_gather_rows,config['debug'])
             cur_mysql.execute(v_ddl)
             print('MySQL:{} table created!'.format(tab))
         else:
@@ -539,23 +656,31 @@ def main():
         n_start       = 1
         n_end         = n_batch
         i_counter     = 0
+        d_desc        = get_tab_desc(db_mongodb, tab, v_where)
+        v_header      = get_ins_header2(tab,d_desc)
+
         while n_start<= n_total_rows:
             v_sql     = ''
+            v_val     = ''
             v_where   = get_mongo_where(db_mysql, n_start, n_end)
+            v_where2  = get_mysql_where(db_mysql, n_start, n_end)
+            v_del     = 'delete from {0} where _id in({1})'.format(tab, v_where2)
             results   = cur_mongo.find({"_id": {'$in':v_where}})
             for dic in results:
-                v_header = get_ins_header(db_mongodb, tab,dic['_id'])
-                v_sql=v_header+' values '+'('+get_ins_values(dic)+')'
-                try:
-                   cur_mysql.execute(v_sql)
-                except:
-                   print(traceback.format_exc())
-                   print(v_sql)
-                   sys.exit(0)
+                v_val = v_val+get_ins_values2(d_desc,dic)+','
+            v_sql=v_header+' values '+v_val[0:-1]
+
+            try:
+               cur_mysql.execute(v_del)
+               cur_mysql.execute(v_sql)
+            except:
+               print(traceback.format_exc())
+               print(v_sql)
+               sys.exit(0)
             db_mysql.commit()
-            i_counter=i_counter+results.count()
-            n_start  = n_start+n_batch_size
-            n_end    = n_end+n_batch_size
+            i_counter = i_counter+results.count()
+            n_start   = n_start+n_batch_size
+            n_end     = n_end+n_batch_size
             print("\rTable:{0},Total :{1},Process :{2},Complete:{3}%,elapse:{4}s"
                   .format(tab, n_total_rows, i_counter,
                           round(i_counter / n_total_rows * 100, 2),
