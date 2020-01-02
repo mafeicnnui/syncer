@@ -100,6 +100,7 @@ def get_config(fname):
     config['sync_table']               = cfg.get("sync", "sync_table")
     config['batch_size']               = cfg.get("sync", "batch_size")
     config['gather_rows']              = cfg.get("sync", "gather_rows")
+    config['sync_time_type']           = cfg.get("sync", "sync_time_type")
 
     #get mysql parameter
     db_mysql                           = cfg.get("sync", "db_mysql")
@@ -197,8 +198,14 @@ def get_col_len(db,tab,col,gather_rows):
     return n_len
 
 def get_col_type(db,tab,col,gather_rows):
-    c1            = db[tab]
-    results       = c1.find({col:{"$exists":"true"}},{col:1}).limit(int(gather_rows))
+    c1  = db[tab]
+    if gather_rows==0:
+       results  = c1.find({col: {"$exists": "true"}}, {col: 1})
+       n_totals = results.count()
+    else:
+       results  = c1.find({col: {"$exists": "true"}}, {col: 1}).limit(int(gather_rows))
+       n_totals = gather_rows
+
     i_int_counter = 0
     i_dec_counter = 0
     i_str_counter = 0
@@ -215,13 +222,13 @@ def get_col_type(db,tab,col,gather_rows):
         else:
             i_str_counter = i_str_counter+1
             if col!='_id':
-               i_str_length  = i_str_length if i_str_length >= len(str(rec[col])) else 3*len(str(rec[col]))+500
+               i_str_length  = i_str_length if i_str_length >= len(str(rec[col])) else 3*len(str(rec[col]))+100
             else:
                i_str_length = i_str_length if i_str_length >= len(str(rec[col])) else 3*len(str(rec[col]))
 
     if i_str_counter>0:
-       if i_str_length<4000:
-          return '{0}:{1}:{2}'.format('varchar',str(i_str_length),'0')
+       if i_str_length+100<4000:
+          return '{0}:{1}:{2}'.format('varchar',str(i_str_length+100),'0')
        elif i_str_length< 8000:
           return '{0}:{1}:{2}'.format('text',str(i_str_length),'0')
        else:
@@ -235,11 +242,10 @@ def get_col_type(db,tab,col,gather_rows):
 
     if i_rq_counter>0 and i_dec_counter==0 and i_int_counter==0 and i_str_counter==0:
        return '{0}:{1}:{2}'.format('datetime', '0', '0')
-       return 'datetime'
+
 
 def is_number(str):
   try:
-    #因为使用float有一个例外是'NaN'
     if str=='NaN':
       return False
     float(str)
@@ -247,15 +253,30 @@ def is_number(str):
   except ValueError:
     return False
 
-def get_tab_desc(db,tab, where):
+def get_tab_desc(db,tab):
     desc = set()
     dict = {}
     c1 = db[tab]
-    results = c1.find(where)
+    results = c1.find()
     for rec in results:
         for key in rec:
             desc.add(key)
             dict[key]=''
+    return dict
+
+def get_tab_desc2(config,tab):
+    dict      = {}
+    db        = config['db_mysql']
+    cr        = db.cursor()
+    v_sql     = '''SELECT column_name 
+                     FROM information_schema.`COLUMNS`
+                    WHERE table_name='{0}' AND table_schema=database()
+                     ORDER BY ordinal_position                   
+                '''.format(tab)
+    cr.execute(v_sql)
+    rs=cr.fetchall()
+    for rec in rs:
+        dict[rec['column_name']]=''
     return dict
 
 ######################################################################
@@ -265,7 +286,7 @@ def get_tab_desc(db,tab, where):
 #  3.逐条遍历以后每一条数据，动态修改key的长度，及类型统计
 #
 ######################################################################
-def get_tab_ddl2(db,tab, where,gather_rows,n_batch,debug):
+def get_tab_ddl2(db,tab,gather_rows,n_batch,debug):
     desc       = set()
     stats      = {}
     c1         = db[tab]
@@ -278,7 +299,7 @@ def get_tab_ddl2(db,tab, where,gather_rows,n_batch,debug):
        results  = c1.find()
        n_totals = results.count()
     else:
-       results  = c1.find(where).limit(gather_rows)
+       results  = c1.find().limit(gather_rows)
        n_totals = gather_rows
 
     print('starting analyze table:{0} column type and length...'.format(tab))
@@ -295,11 +316,17 @@ def get_tab_ddl2(db,tab, where,gather_rows,n_batch,debug):
             f_prec    = 4
             d_counter = 0
 
-            if str(rec[key]).isdigit() and str(rec[key]).count(',') == 0:
-                i_counter = 1
-                f_prec    = 0
-                v_max_len = 0
-            elif is_number(str(rec[key])) and str(rec[key]).count(',') == 0 and str(rec[key]).count('_') == 0:
+            if str(rec[key]).isdigit() and str(rec[key]).count(',') == 0 and str(rec[key])[0] != '0':
+                if int(rec[key])>9223372036854775807:
+                    f_counter = 1
+                    f_prec    = 4
+                    v_max_len = 40
+                else:
+                    i_counter = 1
+                    f_prec    = 0
+                    v_max_len = 0
+            elif is_number(str(rec[key])) and str(rec[key]).count(',') == 0 \
+                    and str(rec[key]).count('_') == 0 and str(rec[key]).count('.') == 1:
                 f_counter = 1
                 f_prec    = 4
                 v_max_len = 40
@@ -331,7 +358,7 @@ def get_tab_ddl2(db,tab, where,gather_rows,n_batch,debug):
                            'f_counter':f_counter,
                            'f_prec'   :f_prec
                            }
-            if  r_counter % n_batch ==0 :
+            if  r_counter % 10000 ==0 :
                 print('\rComputing table:{0} column type and length,process:{1}/{2} ,Complete:{3}%,elapse:{4}s'.
                          format(tab,n_totals,r_counter,
                                 round(r_counter / n_totals * 100, 2),
@@ -342,22 +369,21 @@ def get_tab_ddl2(db,tab, where,gather_rows,n_batch,debug):
                  round(r_counter / n_totals * 100, 2),
                  str(get_seconds(start_time))), end='')
     print('')
-    print('end calc column,elapse time:{0}s'.format(str(get_seconds(start_time))))
+
     #output dict stats
     if debug:
        print_dict(stats)
        print(desc)
 
-
     d_desc={}
     for key in stats:
         if stats[key]['v_counter']>0:
-            if stats[key]['v_max_len']< 4000:
-               d_desc[key]={'type':'varchar','length':stats[key]['v_max_len'],'scale':stats[key]['f_prec']}
-            elif stats[key]['v_max_len']< 8000:
-               d_desc[key] = {'type': 'text', 'length': 0,'scale':stats[key]['f_prec]']}
+            if stats[key]['v_max_len']+100< 4000:
+               d_desc[key]={'type':'varchar','length':stats[key]['v_max_len']+100,'scale':stats[key]['f_prec']}
+            elif stats[key]['v_max_len']+100< 8000:
+               d_desc[key] = {'type': 'text', 'length': 0,'scale':stats[key]['f_prec']}
             else:
-               d_desc[key] = {'type': 'longtext','length': 0,'scale':stats[key]['f_prec]']}
+               d_desc[key] = {'type': 'longtext','length': 0,'scale':stats[key]['f_prec']}
         elif stats[key]['i_counter']>0 and stats[key]['f_counter']==0 and stats[key]['v_counter']==0 and stats[key]['d_counter']==0:
              d_desc[key] = {'type': 'bigint', 'length': 0,'scale':stats[key]['f_prec']}
         elif stats[key]['f_counter']>0 and stats[key]['i_counter']==0 and stats[key]['v_counter']==0 and stats[key]['d_counter']==0:
@@ -373,18 +399,19 @@ def get_tab_ddl2(db,tab, where,gather_rows,n_batch,debug):
     v_pre = ' '.ljust(5, ' ')
     v_ddl = 'create table {0} (\n'.format(tab)
     for key in d_desc:
+        vkey='`{0}`'.format(key)
         if d_desc[key]['type'] == 'varchar':
             if d_desc[key]['length']==0:
-               v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + '{0}({1}),\n'.format(d_desc[key]['type'],100)
+               v_ddl = v_ddl + v_pre + vkey.ljust(40, ' ') + '{0}({1}),\n'.format(d_desc[key]['type'],100)
             else:
-               v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + '{0}({1}),\n'.format(d_desc[key]['type'],
-                                                                                 d_desc[key]['length']*3)
+               v_ddl = v_ddl + v_pre + vkey.ljust(40, ' ') + '{0}({1}),\n'.format(d_desc[key]['type'],
+                                                                                  d_desc[key]['length'])
         elif d_desc[key]['type'] =='decimal':
-            v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + '{0}({1},{2}),\n'.format(d_desc[key]['type'],
-                                                                                  d_desc[key]['length'],
-                                                                                  d_desc[key]['scale'])
+            v_ddl = v_ddl + v_pre + vkey.ljust(40, ' ') + '{0}({1},{2}),\n'.format(d_desc[key]['type'],
+                                                                                   d_desc[key]['length'],
+                                                                                   d_desc[key]['scale'])
         else:
-            v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + d_desc[key]['type'] + ',\n'
+            v_ddl = v_ddl + v_pre + vkey.ljust(40, ' ') + d_desc[key]['type'] + ',\n'
     v_ddl = v_ddl[0:-2] + '\n,primary key(_id)\n' + ')'
     return v_ddl
 
@@ -412,17 +439,6 @@ def get_tab_ddl(db,tab,where,gather_rows,debug):
     desc = list(desc)
     desc.remove('_id')
     cols.extend(desc)
-    '''
-    print('Gathering table {0} column length,please wait!'.format(tab))
-    start_time = datetime.datetime.now()
-    for col in cols:
-        begin_time = datetime.datetime.now()
-        lens[col] = get_col_len(db, tab, col,n_totals)
-        if debug:
-           print('Gathering table:{0} column:{1} len is: {2},elaspse:{3}s'.
-                     format(tab, col, lens[col],str(get_seconds(begin_time))))
-           print('Gathering table {0} column length,elaspse time:{1}s'.format(tab,str(get_seconds(start_time))))
-    '''
 
     print('Gathering table {0} column properties,please wait!'.format(tab))
     start_time = datetime.datetime.now()
@@ -449,16 +465,6 @@ def get_tab_ddl(db,tab,where,gather_rows,debug):
            v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + v_type + ',\n'
     v_ddl = v_ddl[0:-2] + '\n,primary key(_id)\n' + ')'
     return v_ddl
-
-def check_mysql_tab_exists(db,tab):
-   cr=db.cursor()
-   sql="""select count(0) from information_schema.tables
-            where table_schema=database() and table_name='{0}'""".format(tab )
-   cr.execute(sql)
-   rs=cr.fetchone()
-   cr.close()
-   db.commit()
-   return rs['count(0)']
 
 def get_mongodb_table_total_rows(db,tab):
     cr = db.cursor()
@@ -490,9 +496,9 @@ def get_ins_header(db,tab,val):
 def get_ins_header2(tab,dic):
     v_ddl = 'insert into {0} ('.format(tab)
     for key in dic:
-        v_ddl = v_ddl + key + ','
+        v_ddl = v_ddl + '`{0}`'.format(key) + ','
     v_ddl = v_ddl[0:-1] + ')'
-    return
+    return v_ddl
 
 def get_ins_values(dic):
     v_tmp=''
@@ -516,65 +522,325 @@ def get_ins_values2(desc,dic):
     v_ddl = v_ret[0:-1] + ')'
     return v_ddl
 
-
-def get_mongo_where(db,p_start,p_end):
-    cur_mysql = db.cursor()
-    cur_mysql.execute('select _id from t_pk where id between {0} and {1}'.format(p_start,p_end))
-    v_ids     = []
-    rs_mysql  = cur_mysql.fetchall()
-    for dic in list(rs_mysql):
-        v_ids.append(ObjectId(dic['_id']))
-    return v_ids
-
-def get_mysql_where(db,p_start,p_end):
-    cur_mysql  = db.cursor()
-    cur_mysql.execute('select _id from t_pk where id between {0} and {1}'.format(p_start,p_end))
-    v_ids    = []
-    rs_mysql = cur_mysql.fetchall()
-    for dic in list(rs_mysql):
-        v_ids.append("'{0}'".format(dic['_id']))
+def get_mysql_where(p_ids):
+    v_ids  = []
+    for dic in p_ids:
+        v_ids.append("'{0}'".format(dic))
     return ','.join(v_ids)
 
-def get_mongo_incr_where_old(tab):
-    v_day = tab.split(':')[2]
-    #print('v_day=',v_day,type(v_day))
-    if v_day =='':
-       return {}
-    n_day = int(tab.split(':')[2])
-    v_col = tab.split(':')[1]
-    v_rq  = (datetime.datetime.now() + datetime.timedelta(days=-n_day)).strftime('%Y-%m-%d %H:%M:%S')
-    v_json={"{0}".format(v_col):{"$gt":"{0}".format(v_rq)}}
-    return v_json
+def get_mongo_where(p_ids):
+    try:
+        v_ids = []
+        for dic in p_ids:
+            v_ids.append(ObjectId(dic))
+        return v_ids
+    except:
+        return p_ids
 
-def get_mongo_incr_where(tab):
+def get_mongo_incr_where(config,tab):
+    v_rq  = ''
     v_day = tab.split(':')[2]
     if v_day =='':
        return {}
     n_day = int(tab.split(':')[2])
     v_col=tab.split(':')[1]
-    v_rq = (datetime.datetime.now() + datetime.timedelta(days=-n_day)).strftime('%Y-%m-%dT%H:%M:%S.00Z')
+
+    if config['sync_time_type']=='day':
+       v_rq = (datetime.datetime.now() + datetime.timedelta(days=-n_day)).strftime('%Y-%m-%dT%H:%M:%S.00Z')
+    elif config['sync_time_type']=='hour':
+       v_rq = (datetime.datetime.now() + datetime.timedelta(hours=-n_day)).strftime('%Y-%m-%dT%H:%M:%S.00Z')
+    elif config['sync_time_type']=='min':
+       v_rq = (datetime.datetime.now() + datetime.timedelta(minutes=-n_day)).strftime('%Y-%m-%dT%H:%M:%S.00Z')
+    else:
+       v_rq =''
+
+    if v_rq =='':
+       return {}
     v_rq = parser.parse(v_rq)
-    v_json = {v_col: {"$gt": v_rq}}
+    v_json = {v_col: {"$gte": v_rq}}
+    #print('v_json:',v_json)
     return v_json
 
 def format_sql(v_sql):
     return v_sql.replace("\\","\\\\").replace("'","\\'")
 
-def init_tmp_tab(config):
-    db_mysql  = config['db_mysql']
-    cur_mysql = db_mysql.cursor()
-    if check_mysql_tab_exists(db_mysql, 't_pk')==0:
-        cur_mysql.execute('''CREATE TABLE t_pk (
-                              _id varchar(200) DEFAULT NULL,
-                              id bigint(20) NOT NULL AUTO_INCREMENT,
-                              PRIMARY KEY (id))''')
-        print('MySQL:{0},t_pk temp table created!'.format(config['db_mysql_string']))
+def check_mysql_tab_exists(db,tab):
+   cr=db.cursor()
+   sql="""select count(0) from information_schema.tables
+            where table_schema=database() and table_name='{0}'""".format(tab )
+   cr.execute(sql)
+   rs=cr.fetchone()
+   return rs['count(0)']
+
+def get_mysql_tab_rows(db,tab):
+   cr=db.cursor()
+   sql='select count(0) from (select 1 from {0} limit 1) x'.format(tab)
+   cr.execute(sql)
+   rs=cr.fetchone()
+   cr.close()
+   return rs['count(0)']
+
+def process_error(config,tab,error):
+    db_mongodb = config['db_mongo']
+    db_mysql   = config['db_mysql']
+    cur_mysql  = db_mysql.cursor()
+    error_col  = error.split("Unknown column")[1].split("'")[1]
+    mongo_col  = get_col_type(db_mongodb,tab,error_col,0)
+    v_sql      = ''
+    if mongo_col.split(':')[0]=='varchar':
+       v_col_type = mongo_col.split(':')[0]
+       v_col_len  = mongo_col.split(':')[1]
+       v_sql      = 'alter table {0} add column {1} {2}({3})'.format(tab,error_col,v_col_type,v_col_len)
+    elif mongo_col.split(':')[0]=='decimal':
+        v_col_type = mongo_col.split(':')[0]
+        v_col_len  = mongo_col.split(':')[1]
+        v_col_prec = mongo_col.split(':')[2]
+        v_sql      = 'alter table {0} add column {1} {2}({3},{4})'.format(tab, error_col, v_col_type, v_col_len,v_col_prec)
+    else:
+        v_col_type = mongo_col.split(':')[0]
+        v_col_len  = mongo_col.split(':')[1]
+        v_sql      = 'alter table {0} add column {1} {2}'.format(tab, error_col, v_col_type)
+    try:
+       print(v_sql)
+       cur_mysql.execute(v_sql)
+       print('\033[1;31;40mTable:{0} add column {1} success!\033[0m'.format(tab,error_col))
+    except:
+       print('\033[1;31;40mTable:{0} add column {1} failure!\033[0m'.format(tab, error_col))
     cur_mysql.close()
 
+def full_sync(config):
+    db_mongodb  = config['db_mongo']
+    db_mongodb2 = config['db_mongo']
+    db_mysql    = config['db_mysql']
+    cur_mysql   = db_mysql.cursor()
+    config_init = {}
+    #sync data
+    for tabs in config['sync_table'].split(","):
+      tab = tabs.split(':')[0]
+      config_init[tab] = False
 
+      if check_mysql_tab_exists(db_mysql,tab) and get_mysql_tab_rows(db_mysql,tab)==0:
+         config_init[tab] = True
+         cur_mongo        = db_mongodb[tab]
+         cur_mongo2       = db_mongodb2[tab]
+         results          = cur_mongo.find({'_id': {"$exists": "true"}}, {'_id': 1},no_cursor_timeout = True)
+         start_time       = datetime.datetime.now()
+         n_batch_size     = int(config['batch_size'])
+         n_total_rows     = results.count()
+         i_counter        = 0
+         #full incr to mysql get tab stru and header
+         d_desc           = get_tab_desc2(config,tab)
+         v_header         = get_ins_header2(tab, d_desc)
+         v_ids            = []
+         v_val            = ''
+         for rec in results:
+             i_counter = i_counter + 1
+             v_ids.append(rec['_id'])
+             v_val=''
+             if i_counter % n_batch_size == 0:
+                 v_mongo_where   = get_mongo_where(v_ids)
+                 v_mongo_results = cur_mongo2.find({"_id": {'$in': v_mongo_where}})
+                 v_del           = 'delete from {0} where _id in({1})'.format(tab, get_mysql_where(v_ids))
+                 for rec2 in v_mongo_results:
+                     v_val = v_val + get_ins_values2(d_desc, rec2) + ','
+                 v_sql = v_header + ' values ' + v_val[0:-1]
+                 try:
+                     cur_mysql.execute(v_del)
+                     cur_mysql.execute(v_sql)
+                     v_ids = []
+                     v_val = ''
+                 except:
+                     error=traceback.format_exc()
+                     print(v_del)
+                     print(v_sql)
+                     print(error)
+                     print('\033[1;32;40mTry repair error!,please wait!\033[0m')
+                     process_error(config,tab,error)
+                     cur_mysql.execute(v_del)
+                     cur_mysql.execute(v_sql)
+                     v_ids = []
+                     v_val = ''
+
+             if  i_counter%10000==0:
+                 print("\rTable:{0},Total :{1},Process :{2},Complete:{3}%,elapse:{4}s"
+                       .format(tab, n_total_rows, i_counter,
+                               round(i_counter / n_total_rows * 100, 2),
+                               str(get_seconds(start_time))), end='')
+
+         #last batch
+         if len(v_ids)>0:
+            v_mongo_where = get_mongo_where(v_ids)
+            v_mongo_results = cur_mongo2.find({"_id": {'$in': v_mongo_where}})
+            v_del = 'delete from {0} where _id in({1})'.format(tab, get_mysql_where(v_ids))
+            for rec2 in v_mongo_results:
+                v_val = v_val + get_ins_values2(d_desc, rec2) + ','
+            v_sql = v_header + ' values ' + v_val[0:-1]
+            try:
+                cur_mysql.execute(v_del)
+                cur_mysql.execute(v_sql)
+                v_ids = []
+                v_val = ''
+            except:
+                error = traceback.format_exc()
+                print(v_del)
+                print(v_sql)
+                print(error)
+                print('\033[1;32;40mTry repair error!,please wait!\033[0m')
+                process_error(config, tab, error)
+                cur_mysql.execute(v_del)
+                cur_mysql.execute(v_sql)
+                v_ids = []
+                v_val = ''
+
+            print("\rTable:{0},Total :{1},Process :{2},Complete:{3}%,elapse:{4}s"
+                  .format(tab, n_total_rows, i_counter,
+                          round(i_counter / n_total_rows * 100, 2),
+                          str(get_seconds(start_time))), end='')
+            print('')
+
+         #last commit transaction
+         db_mysql.commit()
+
+      else:
+        print('{0} Table: {1} already exists date,skip full sync!'.format(get_time(),tab))
+    return config_init
+
+def incr_sync(config,config_init):
+    db_mongodb  = config['db_mongo']
+    db_mongodb2 = config['db_mongo']
+    db_mysql    = config['db_mysql']
+    cur_mysql   = db_mysql.cursor()
+    #sync data
+    for tabs in config['sync_table'].split(","):
+        tab = tabs.split(':')[0]
+        day = tabs.split(':')[2]
+        #if check_mysql_tab_exists(db_mysql, tab) and not config_init[tab]:
+        if check_mysql_tab_exists(db_mysql, tab):
+            cur_mongo    = db_mongodb[tab]
+            cur_mongo2   = db_mongodb2[tab]
+            start_time   = datetime.datetime.now()
+            n_batch_size = int(config['batch_size'])
+            i_counter    = 0
+            #incr sync from mysql get stru
+            d_desc       = get_tab_desc2(config, tab)
+            v_header     = get_ins_header2(tab, d_desc)
+            v_ids        = []
+            v_val        = ''
+            #tab no config sync column,must be do full sync
+            if day=='':
+               print('{0} Table: {1} no config sync column,starting full sync!'.format(get_time(),tab))
+               print('{0} Deleting Table {1} all data,please wait!'.format(get_time(),tab))
+               cur_mysql.execute('delete from {0}'.format(tab))
+
+            v_incr       = get_mongo_incr_where(config, tabs)
+            #print('{0} Table:{1} Query:db.{2}.find({3})'.format(get_time(),tab,tab,v_incr))
+            results      = cur_mongo.find(v_incr, {'_id': 1}, no_cursor_timeout=True)
+            n_total_rows = results.count()
+            if n_total_rows>0:
+                for rec in results:
+                    i_counter = i_counter + 1
+                    v_ids.append(rec['_id'])
+                    v_val = ''
+                    if i_counter % n_batch_size == 0:
+                        v_mongo_where   = get_mongo_where(v_ids)
+                        v_mongo_results = cur_mongo2.find({"_id": {'$in': v_mongo_where}},no_cursor_timeout = True)
+                        v_del = 'delete from {0} where _id in({1})'.format(tab, get_mysql_where(v_ids))
+                        for rec2 in v_mongo_results:
+                            v_val = v_val + get_ins_values2(d_desc, rec2) + ','
+                        v_sql = v_header + ' values ' + v_val[0:-1]
+                        try:
+                            cur_mysql.execute(v_del)
+                            cur_mysql.execute(v_sql)
+                            v_ids = []
+                            v_val = ''
+                        except:
+                            error = traceback.format_exc()
+                            print(v_del)
+                            print(v_sql)
+                            print(error)
+                            print('\033[1;32;40mTry repair error!,please wait!\033[0m')
+                            process_error(config, tab, error)
+                            cur_mysql.execute(v_del)
+                            cur_mysql.execute(v_sql)
+                            v_ids = []
+                            v_val = ''
+                    if i_counter % 5000 == 0:
+                        print("\r{0} Table:{1},Total :{2},Process :{3},Complete:{4}%,elapse:{5}s"
+                              .format(get_time(),
+                                      tab, n_total_rows, i_counter,
+                                      round(i_counter / n_total_rows * 100, 2),
+                                      str(get_seconds(start_time))), end='')
+
+                #last batch
+                if len(v_ids) > 0:
+                    v_mongo_where = get_mongo_where(v_ids)
+                    v_mongo_results = cur_mongo2.find({"_id": {'$in': v_mongo_where}})
+                    v_del = 'delete from {0} where _id in({1})'.format(tab, get_mysql_where(v_ids))
+                    for rec2 in v_mongo_results:
+                        v_val = v_val + get_ins_values2(d_desc, rec2) + ','
+                    v_sql = v_header + ' values ' + v_val[0:-1]
+                    try:
+                        cur_mysql.execute(v_del)
+                        cur_mysql.execute(v_sql)
+                        v_ids = []
+                        v_val = ''
+                    except:
+                        error = traceback.format_exc()
+                        print(v_del)
+                        print(v_sql)
+                        print(error)
+                        print('\033[1;32;40mTry repair error!,please wait!\033[0m')
+                        process_error(config, tab, error)
+                        cur_mysql.execute(v_del)
+                        cur_mysql.execute(v_sql)
+                        v_ids = []
+                        v_val = ''
+
+                    print("\r{0} Table:{1},Total :{2},Process :{3},Complete:{4}%,elapse:{5}s"
+                          .format(get_time(),
+                                  tab, n_total_rows, i_counter,
+                                  round(i_counter / n_total_rows * 100, 2),
+                                  str(get_seconds(start_time))), end='')
+                    print('')
+
+                #last commit transaction
+                db_mysql.commit()
+            else:
+               print('{0} Table:{1} recent {2} {3} no found data,skip increment sync!'.format(get_time(), tab, day,config['sync_time_type']))
+        else:
+           if day=='':
+              print('{0} Table:{1} no exists! skip sync!'.format(get_time(),tab))
+
+    return config_init
+
+def cre_tab(config):
+    db_mongodb = config['db_mongo']
+    db_mysql   = config['db_mysql']
+    cur_mysql  = db_mysql.cursor()
+    for tabs in config['sync_table'].split(","):
+        tab           = tabs.split(':')[0]
+        cur_mongo     = db_mongodb[tab]
+        results       = cur_mongo.find()
+        n_totals      = results.count()
+        n_batch       = int(config['batch_size'])
+        n_gather_rows = int(config['gather_rows'])
+
+        if n_totals == 0:
+            print("{0} Table:{1} 0 rows,skip sync!".format(get_time(),tab))
+            continue
+
+        # create tables
+        if check_mysql_tab_exists(db_mysql, tab) == 0:
+            v_ddl = get_tab_ddl2(db_mongodb,tab,n_gather_rows, n_batch, config['debug'])
+            if config['debug']:
+                print(v_ddl)
+            cur_mysql.execute(v_ddl)
+            print('{0} MySQL:{1} table created!'.format(get_time(),tab))
+        else:
+            print('{0} MySQL:{1} table already exists!'.format(get_time(),tab))
 
 def main():
-    #init variable
+    #init
     config = ""
     debug = False
     warnings.filterwarnings("ignore")
@@ -585,107 +851,21 @@ def main():
             debug = True
 
     #get config
-    config          = init(config,debug)
+    config = init(config,debug)
     config['debug'] = debug
-    #process
-    db_mongodb      = config['db_mongo']
-    db_mysql        = config['db_mysql']
-    cur_mysql       = db_mysql.cursor()
 
-    #init t_pk
-    init_tmp_tab(config)
+    #create table
+    print("\033[1;32;40m{0} Creating table,please wait!\033[0m".format(get_time()))
+    cre_tab(config)
 
-    for tabs in config['sync_table'].split(","):
-        tab            = tabs.split(':')[0]
-        cur_mongo      = db_mongodb[tab]
-        v_where        = get_mongo_incr_where(tabs)
-        results        = cur_mongo.find(v_where)
-        n_totals       = results.count()
-        n_batch        = int(config['batch_size'])
-        n_gather_rows  = int(config['gather_rows'])
+    #full sync
+    print("\033[1;32;40m{0} Full Sync data,please wait!\033[0m".format(get_time()))
+    config_init=full_sync(config)
 
-        if n_totals == 0:
-           print("Table:{0} 0 rows,skip sync!".format(tab))
-           continue
+    #incr_sync
+    print("\033[1;32;40m{0} Increment Sync data,please wait!\033[0m".format(get_time()))
+    incr_sync(config,config_init)
 
-        # create tables
-        if check_mysql_tab_exists(db_mysql,tab)==0:
-            v_ddl = get_tab_ddl2(db_mongodb,tab,v_where,n_gather_rows,n_batch,config['debug'])
-            #v_ddl = get_tab_ddl(db_mongodb,tab,v_where,n_gather_rows,config['debug'])
-            if config['debug']:
-               print(v_ddl)
-            cur_mysql.execute(v_ddl)
-            print('MySQL:{} table created!'.format(tab))
-        else:
-            print('MySQL:{} table already exists!'.format(tab))
-
-        #write t_pk
-        v_ins      = ''
-        v_header   ='insert into t_pk(_id) values '
-        i_counter  = 0
-        start_time = datetime.datetime.now()
-
-        #init t_pk
-        cur_mysql.execute('truncate table t_pk')
-        #insert t_pk
-        for dic in results:
-            v_ins =v_ins+ "('{0}'),".format(dic['_id'])
-            i_counter=i_counter+1
-            if i_counter % n_batch ==0:
-               v_sql=v_header+v_ins[0:-1]
-               cur_mysql.execute(v_sql)
-               db_mysql.commit()
-               v_ins=''
-               print('\rMySQL:t_pk insert {0}/{1} ,Complete:{2}%,elapse:{3}s'.
-                     format(n_totals,i_counter,round(i_counter / n_totals * 100, 2),str(get_seconds(start_time))),end='')
-        #process last batch
-        if v_ins!='':
-            v_sql = v_header + v_ins[0:-1]
-            cur_mysql.execute(v_sql)
-            db_mysql.commit()
-            print('\rMySQL:t_pk insert {0}/{1} ,Complete:{2}%,elapse:{3}s'.
-                  format(n_totals, i_counter, round(i_counter / n_totals * 100, 2),str(get_seconds(start_time))), end='')
-        print('')
-        print('MySQL:t_pk insert {0} rows ok!'.format(str(n_totals)))
-
-        #insert data
-        start_time    = datetime.datetime.now()
-        cur_mongo     = db_mongodb[tab]
-        n_batch_size  = int(config['batch_size'])
-        n_total_rows  = get_table_total_rows(db_mysql,'t_pk')
-        n_start       = 1
-        n_end         = n_batch
-        i_counter     = 0
-        d_desc        = get_tab_desc(db_mongodb, tab, v_where)
-        v_header      = get_ins_header2(tab,d_desc)
-
-        while n_start<= n_total_rows:
-            v_sql     = ''
-            v_val     = ''
-            v_where   = get_mongo_where(db_mysql, n_start, n_end)
-            v_where2  = get_mysql_where(db_mysql, n_start, n_end)
-            v_del     = 'delete from {0} where _id in({1})'.format(tab, v_where2)
-            results   = cur_mongo.find({"_id": {'$in':v_where}})
-            for dic in results:
-                v_val = v_val+get_ins_values2(d_desc,dic)+','
-            v_sql=v_header+' values '+v_val[0:-1]
-
-            try:
-               cur_mysql.execute(v_del)
-               cur_mysql.execute(v_sql)
-            except:
-               print(traceback.format_exc())
-               print(v_sql)
-               sys.exit(0)
-            db_mysql.commit()
-            i_counter = i_counter+results.count()
-            n_start   = n_start+n_batch_size
-            n_end     = n_end+n_batch_size
-            print("\rTable:{0},Total :{1},Process :{2},Complete:{3}%,elapse:{4}s"
-                  .format(tab, n_total_rows, i_counter,
-                          round(i_counter / n_total_rows * 100, 2),
-                          str(get_seconds(start_time))), end='')
-        print('')
 
 if __name__ == "__main__":
      main()
