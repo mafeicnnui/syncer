@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# @Time : 2019/1/30 9:31
-# @Author : 马飞
-# @File : sync_mysql2mongo.py
+# @Time    : 2019/1/30 9:31
+# @Author  : 马飞
+# @File    : sync_mysql2mongo.py
 # @Software: PyCharm
+# @Func    : optimizer create table
+
 import sys,time
 import traceback
 import configparser
@@ -148,6 +150,9 @@ def is_valid_date(strdate):
         if ":" in strdate and len(strdate)==26 and time.strptime(strdate[0:19], "%Y-%m-%d %H:%M:%S"):
            return True
 
+        if time.strptime(strdate, "%Y-%m-%d %H:%M:%S"):
+           return True
+
         if time.strptime(strdate, "%Y-%m-%d"):
            return True
 
@@ -194,6 +199,139 @@ def get_col_type(db,tab,col,gather_rows):
 
     if i_rq_counter>0 and i_int_counter==0 and i_str_counter==0:
        return 'datetime'
+
+def is_number(str):
+  try:
+    # 因为使用float有一个例外是'NaN'
+    if str=='NaN':
+      return False
+    float(str)
+    return True
+  except ValueError:
+    return False
+
+######################################################################
+#
+#  1.遍历MongoDB表所有记录
+#  2.遍历每一条记录所有key,获取每个key的长度，及类型统计
+#  3.逐条遍历以后每一条数据，动态修改key的长度，及类型统计
+#
+######################################################################
+def get_tab_ddl2(db,tab, where,gather_rows,debug):
+    desc       = set()
+    stats      = {}
+    c1         = db[tab]
+    start_time = datetime.datetime.now()
+    r_counter  = 0
+    results    = c1.find(where).limit(gather_rows)
+    n_totals   = gather_rows     #results.count()
+    print('begin calc column...')
+    for rec in results:
+        r_counter = r_counter + 1
+        for key in rec:
+            #add key to set
+            desc.add(key)
+            #calc column type stats
+            v_counter = 0
+            v_max_len = 0
+            i_counter = 0
+            f_counter = 0
+            f_prec    = 4
+            d_counter = 0
+
+            if str(rec[key]).isdigit() and str(rec[key]).count(',') == 0:
+                i_counter = 1
+                f_prec    = 0
+                v_max_len = 0
+            elif is_number(str(rec[key])) and str(rec[key]).count(',') == 0 and str(rec[key]).count('_') == 0:
+                f_counter = 1
+                f_prec    = 4
+                v_max_len = 40
+
+            elif is_valid_date(str(rec[key])):
+                d_counter = 1
+                f_prec    = 0
+                v_max_len = 0
+            else:
+                v_counter = 1
+                f_prec    = 0
+                v_max_len = len(str(rec[key]))
+
+            if key in stats:
+               stats[key]={
+                           'v_counter':stats[key]['v_counter']+v_counter,
+                           'v_max_len':v_max_len if v_max_len>stats[key]['v_max_len'] else stats[key]['v_max_len'],
+                           'd_counter':stats[key]['d_counter']+d_counter,
+                           'i_counter':stats[key]['i_counter']+i_counter,
+                           'f_counter':stats[key]['f_counter']+f_counter,
+                           'f_prec'   :f_prec
+                          }
+            else:
+               stats[key]={
+                           'v_counter':v_counter,
+                           'd_counter':d_counter,
+                           'v_max_len':v_max_len,
+                           'i_counter':i_counter,
+                           'f_counter':f_counter,
+                           'f_prec'   : f_prec
+                           }
+            if  r_counter % 1000 ==0 :
+                print('\rComputing table:{0} column type and length,process:{1}/{2} ,Complete:{3}%,elapse:{4}s'.
+                         format(tab,n_totals,r_counter,
+                                round(r_counter / n_totals * 100, 2),
+                                str(get_seconds(start_time))),end='')
+
+    print('\rComputing table:{0} column type and length,process:{1}/{2} ,Complete:{3}%,elapse:{4}s'.
+          format(tab, n_totals, r_counter,
+                 round(r_counter / n_totals * 100, 2),
+                 str(get_seconds(start_time))), end='')
+    print('')
+    print('end calc column,elapse time:{0}'.format(str(get_seconds(start_time))))
+    #output dict stats
+    if debug:
+       print_dict(stats)
+       print(desc)
+
+
+    d_desc={}
+    for key in stats:
+        if stats[key]['v_counter']>0:
+            if stats[key]['v_max_len']< 4000:
+               d_desc[key]={'type':'varchar','length':stats[key]['v_max_len'],'scale':stats[key]['f_prec']}
+            elif stats[key]['v_max_len']< 8000:
+               d_desc[key] = {'type': 'text', 'length': 0,'scale':stats[key]['f_prec]']}
+            else:
+               d_desc[key] = {'type': 'longtext','length': 0,'scale':stats[key]['f_prec]']}
+        elif stats[key]['i_counter']>0 and stats[key]['f_counter']==0 and stats[key]['v_counter']==0 and stats[key]['d_counter']==0:
+             d_desc[key] = {'type': 'bigint', 'length': 0,'scale':stats[key]['f_prec']}
+        elif stats[key]['f_counter']>0 and stats[key]['i_counter']==0 and stats[key]['v_counter']==0 and stats[key]['d_counter']==0:
+             d_desc[key] = {'type': 'decimal', 'length': stats[key]['v_max_len'],'scale':stats[key]['f_prec']}
+        elif stats[key]['d_counter'] > 0 and stats[key]['i_counter'] == 0 and stats[key]['v_counter'] == 0 and stats[key]['f_counter'] == 0:
+             d_desc[key] = {'type': 'datetime', 'length': 0, 'scale': stats[key]['f_prec']}
+        else:
+             d_desc[key] = {'type': 'varchar', 'length': stats[key]['v_max_len'], 'scale': stats[key]['f_prec']}
+    if debug:
+       print('print dict d_desc...')
+       print_dict(d_desc)
+
+    v_pre = ' '.ljust(5, ' ')
+    v_ddl = 'create table {0} (\n'.format(tab)
+    for key in d_desc:
+        if d_desc[key]['type'] == 'varchar':
+            if d_desc[key]['length']==0:
+               v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + '{0}({1}),\n'.format(d_desc[key]['type'],100)
+            else:
+               v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + '{0}({1}),\n'.format(d_desc[key]['type'],
+                                                                                 d_desc[key]['length']*3)
+        elif d_desc[key]['type'] =='decimal':
+            v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + '{0}({1},{2}),\n'.format(d_desc[key]['type'],
+                                                                                  d_desc[key]['length'],
+                                                                                  d_desc[key]['scale'])
+        else:
+            v_ddl = v_ddl + v_pre + key.ljust(40, ' ') + d_desc[key]['type'] + ',\n'
+    v_ddl = v_ddl[0:-2] + '\n' + ')'
+    return v_ddl
+
 
 def get_tab_ddl(db,tab,where,gather_rows,debug):
     desc  = set()
@@ -307,17 +445,16 @@ def get_mongo_incr_where(tab):
 def format_sql(v_sql):
     return v_sql.replace("\\","\\\\").replace("'","\\'")
 
-
-######################################################################
-#
-#  1.遍历MongoDB表所有记录
-#  2.遍历每一条记录所有key,获取每个key的长度，及类型统计
-#  3.逐条遍历以后每一条数据，动态修改key的长度，及类型统计
-#
-######################################################################
-def get_tab_ddl2(tabs):
-    pass
-
+def init_tmp_tab(config):
+    db_mysql  = config['db_mysql']
+    cur_mysql = db_mysql.cursor()
+    if check_mysql_tab_exists(db_mysql, 't_pk')==0:
+        cur_mysql.execute('''CREATE TABLE t_pk (
+                              _id varchar(200) DEFAULT NULL,
+                              id bigint(20) NOT NULL AUTO_INCREMENT,
+                              PRIMARY KEY (id))''')
+        print('MySQL:{0},t_pk temp table created!'.format(config['db_mysql_string']))
+    cur_mysql.close()
 
 def main():
     #init variable
@@ -331,12 +468,15 @@ def main():
             debug = True
 
     #get config
-    config       = init(config,debug)
-    config['debug']=debug
+    config          = init(config,debug)
+    config['debug'] = debug
     #process
-    db_mongodb   = config['db_mongo']
-    db_mysql     = config['db_mysql']
-    cur_mysql    = db_mysql.cursor()
+    db_mongodb      = config['db_mongo']
+    db_mysql        = config['db_mysql']
+    cur_mysql       = db_mysql.cursor()
+
+    #init t_pk
+    init_tmp_tab(config)
 
     for tabs in config['sync_table'].split(","):
         tab       = tabs.split(':')[0]
@@ -352,7 +492,11 @@ def main():
 
         # create tables
         if check_mysql_tab_exists(db_mysql,tab)==0:
-            v_ddl = get_tab_ddl(db_mongodb,tab,v_where,n_gather_rows,config['debug'])
+            v_ddl =get_tab_ddl2(db_mongodb,tab,v_where,n_gather_rows,config['debug'])
+            if config['debug']:
+               print(v_ddl)
+            #sys.exit(0)
+            #v_ddl = get_tab_ddl(db_mongodb,tab,v_where,n_gather_rows,config['debug'])
             cur_mysql.execute(v_ddl)
             print('MySQL:{} table created!'.format(tab))
         else:
