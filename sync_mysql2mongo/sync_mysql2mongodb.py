@@ -150,32 +150,33 @@ def main():
     db_mysql  = config['db_mysql']
     db_mongo  = config['db_mongo']
     mysql_cur = db_mysql.cursor()
-    #v_json
+    #write mongo
     start_time   = datetime.datetime.now()
     n_batch_size = int(config['batch_size'])
+    n_start      = 1
     for tab in config['sync_table'].split(","):
           i_counter    = 0
           n_total_rows = get_table_total_rows(db_mysql, tab)
-          mysql_cur.execute('select * from {0}'.format(tab))
-          mysql_rs     = mysql_cur.fetchmany(n_batch_size)
-          while mysql_rs:
+          while n_start<=n_total_rows:
+              v_sql='select * from {0} limit {1},{2}'.format(tab, n_start, n_batch_size)
+              mysql_cur.execute('select * from {0} limit {1},{2}'.format(tab, n_start, n_batch_size))
+              mysql_rs   = mysql_cur.fetchall()
               mysql_ls   = []
               mysql_desc = mysql_cur.description
               for i in range(len(mysql_rs)):
                   for j in range(len(mysql_rs[i])):
                        col_name = str(mysql_desc[j][0])
                        col_type = str(mysql_desc[j][1])
-                       if col_type  in('1','3','8','246','12'):
+                       if col_type in ('1','3','8','246','12'):
                            mysql_rs[i][col_name]=str(mysql_rs[i][col_name])
-                  #db_mongo.tc_record.insert(mysql_rs[i])
                   mysql_ls.append(mysql_rs[i])
-              #print(mysql_ls)
               i_counter = i_counter + len(mysql_rs)
-              db_mongo.tc_record.insert_many(mysql_ls)
+              db_mongo[tab].insert_many(mysql_ls)
               print("\rTable:{0},Total rec:{1},Process rec:{2},Complete:{3}%,elapse:{4}s"
-                   .format(tab, n_total_rows, i_counter,round(i_counter / n_total_rows * 100, 2),str(get_seconds(start_time))), end='')
-              mysql_rs = mysql_cur.fetchmany(n_batch_size)
-
+                   .format(tab, n_total_rows, i_counter,
+                           round(i_counter / n_total_rows * 100, 2),
+                           str(get_seconds(start_time))), end='')
+              n_start  = n_start+n_batch_size
     db_mysql.close()
 
 if __name__ == "__main__":
