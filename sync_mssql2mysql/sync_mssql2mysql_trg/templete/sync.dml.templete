@@ -1,0 +1,45 @@
+create trigger trig_{0}_dml_sync on {1} after INSERT,DELETE,UPDATE as
+begin
+     SET NOCOUNT ON;
+	 declare @id int;
+	 select  @id=isnull(max(id)+1,1) from t_sync_log;
+	 declare @pk_name varchar(1000);
+	 declare @pk_val  varchar(1000);
+	 set @pk_name=dbo.f_get_pk_names('{2}');
+
+	 --insert
+	 if(exists(select 1 from inserted) and not exists(select 1 from deleted))
+	 begin
+        select @pk_val={3} from inserted;
+	    insert into t_sync_log(id,tname,pk_name,pk_val,opt,created,flag) values(@id,'{4}',@pk_name,@pk_val,'I',getdate(),'N');
+	 end;
+
+	--delete
+    if(not exists(select 1 from inserted) and exists(select 1 from deleted))
+    begin
+        declare cur cursor local forward_only for select {5} from deleted;
+        open cur;
+        fetch next from cur into @pk_val;
+        while @@FETCH_STATUS=0
+        begin
+          select  @id=isnull(max(id)+1,1) from t_sync_log;
+          insert into t_sync_log(id,tname,pk_name,pk_val,opt,created,flag) values(@id,'{6}',@pk_name,@pk_val,'D',getdate(),'N');
+          fetch next from cur into @pk_val;
+	    end;
+    end;
+
+    --update
+    if(exists(select 1 from inserted) and exists(select 1 from deleted))
+    begin
+        declare cur cursor local forward_only for select {7} from deleted;
+        open cur;
+        fetch next from cur into @pk_val;
+        while @@FETCH_STATUS=0
+        begin
+          select  @id=isnull(max(id)+1,1) from t_sync_log;
+          insert into t_sync_log(id,tname,pk_name,pk_val,opt,created,flag) values(@id,'{8}',@pk_name,@pk_val,'U',getdate(),'N');
+          fetch next from cur into @pk_val;
+	    end;
+    end;
+
+end

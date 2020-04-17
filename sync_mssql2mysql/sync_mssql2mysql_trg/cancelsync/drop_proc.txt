@@ -1,0 +1,7 @@
+/* 删除过程：proc_init_tab */
+IF EXISTS(SELECT * FROM sysobjects WHERE id =  object_id(N'[dbo].[proc_init_tab]') AND xtype = 'P')
+   DROP PROCEDURE dbo.[proc_init_tab]
+
+/* 删除过程：proc_init_tab_nopk */
+IF EXISTS(SELECT * FROM sysobjects WHERE id =  object_id(N'[dbo].[proc_init_tab_nopk]') AND xtype = 'P')
+   DROP PROCEDURE dbo.[proc_init_tab_nopk]

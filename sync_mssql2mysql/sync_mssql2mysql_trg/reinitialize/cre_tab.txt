@@ -1,0 +1,56 @@
+/* 创建表：t_sync_log */
+IF EXISTS(SELECT * FROM sysobjects WHERE id =  object_id(N'[dbo].[t_sync_log]') AND xtype = 'U')
+   drop table [dbo].[t_sync_log]
+CREATE TABLE [dbo].[t_sync_log](
+	[id]      [int] NOT NULL,
+	[tname]   [varchar](100) NULL,
+	[pk_name] [varchar](100) NULL,
+	[pk_val]  [varchar](100) NULL,
+	[opt]     [varchar](3) NULL,
+	[created] [datetime] NULL,
+	[flag]    [varchar](1) NULL default 'N',
+	[Object]  [sysname] NULL,
+	[TSQL]    [nvarchar](max) NULL,
+    PRIMARY KEY CLUSTERED ([id] ASC)
+) ON [PRIMARY];
+create index idx_t_sync_log_flag on t_sync_log(flag);
+
+/* 创建表：t_sync_log_init */
+IF EXISTS(SELECT * FROM sysobjects WHERE id =  object_id(N'[dbo].[t_sync_log_init]') AND xtype = 'U')
+   drop table [dbo].[t_sync_log_init];
+CREATE TABLE [dbo].[t_sync_log_init](
+	[id]      [int] NOT NULL,
+	[tname]   [varchar](100) NULL,
+	[pk_name] [varchar](100) NULL,
+	[pk_val]  [varchar](100) NULL,
+	[opt]     [varchar](3) NULL,
+	[created] [datetime] NULL,
+	[flag]    [varchar](1) NULL default 'N',
+	[Object]  [sysname] NULL,
+	[TSQL]    [nvarchar](max) NULL,
+PRIMARY KEY CLUSTERED ([id] ASC)) ON [PRIMARY];
+create index idx_t_sync_log_init_flag on t_sync_log_init(flag);
+
+
+/* 创建表：t_sync_col_mapping */
+IF EXISTS(SELECT * FROM sysobjects WHERE id =  object_id(N'[dbo].[t_sync_col_mapping]') AND xtype = 'U')
+   drop table t_sync_col_mapping;
+create table t_sync_col_mapping(
+     id int       identity(1,1) not null primary key,
+     tname        varchar(100),
+     col_name     varchar(100),
+     mapping_name varchar(100));
+insert into t_sync_col_mapping(tname,col_name,mapping_name) values('yetai_pk','店铺编号','SiteCode');
+insert into t_sync_col_mapping(tname,col_name,mapping_name) values('yetai_pk','一级业态','level1');
+insert into t_sync_col_mapping(tname,col_name,mapping_name) values('yetai_pk','二级业态','level2');
+insert into t_sync_col_mapping(tname,col_name,mapping_name) values('yetai_pk','三级业态','level3');
+insert into t_sync_col_mapping(tname,col_name,mapping_name) values('yetai_pk','品牌','brand');
+
+/* 创建表：t_sync_tab_mapping */
+IF EXISTS(SELECT * FROM sysobjects WHERE id =  object_id(N'[dbo].[t_sync_tab_mapping]') AND xtype = 'U')
+  drop table t_sync_tab_mapping;
+create table t_sync_tab_mapping(
+     id           int identity(1,1) not null primary key,
+     tname        varchar(100),
+     mapping_name varchar(100));
+insert into t_sync_tab_mapping(tname,mapping_name) values('tc.record','tc_record');

@@ -1,0 +1,28 @@
+alter procedure [dbo].[proc_init_tab_nopk]
+ @p_tname varchar(100) as 
+begin
+ declare @id int;
+ select  @id=isnull(max(id)+1,1) from t_sync_log;
+ 
+ declare @pk_name varchar(1000);
+ declare @pk_val  varchar(1000); 
+ set @pk_name=dbo.f_get_pk_names(@p_tname); 
+ 
+ declare @sql nvarchar(1000);
+ set @sql = 'delete from t_sync_log where tname='''+@p_tname+'''';
+ exec(@sql)
+
+ set @sql = 'declare rowCursor cursor for select '+dbo.f_get_pk_vals(@p_tname)+' from '+@p_tname+' order by '+@pk_name;
+ -- select @sql; 
+ exec(@sql)
+ OPEN rowCursor; 
+ fetch next from rowCursor into @pk_val;
+ while(@@FETCH_STATUS=0)
+ begin
+    select  @id=isnull(max(id)+1,1) from t_sync_log; 
+    insert into t_sync_log(id,tname,pk_name,pk_val,opt,created,flag) values(@id,@p_tname,@pk_name,@pk_val,'U',getdate(),'N');
+    fetch next from rowCursor into @pk_val;
+ end;
+ close rowCursor;
+ deallocate rowCursor; 
+end;

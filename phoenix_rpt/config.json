@@ -1,0 +1,10 @@
+{ "phoenix_db":"192.168.1.1:8765",
+  "data":[
+      {"xh":1,"sql":"drop index \"idx_t_bb01_tmp_n1\" on \"t_bb01_tmp\""},
+      {"xh":2,"sql":"delete from \"t_bb01_tmp\" where \"sid\"=:sid"},
+      {"xh":3,"sql":"upsert into \"t_bb01_tmp\"(\"id\",\"bbrq\",\"n1\",\"n2\",\"n3\",\"sid\")  select \"id\",\"bbrq\",\"n1\",\"n2\",\"n3\",:sid from \"t_bb01\""},
+      {"xh":4,"sql":"upsert into \"t_bb01_tmp\"(\"id\",\"bbrq\",\"n1\",\"n2\",\"n3\",\"sid\")  select  NEXT VALUE FOR t_bb01_seq+2,'total',(a.\"n1\"+b.\"n1\") as n1,(a.\"n2\"+b.\"n2\") as n2,(a.\"n3\"+b.\"n3\") as n3,:sid from (select \"id\",\"bbrq\",\"n1\",\"n2\",\"n3\" from \"t_bb01_tmp\" where \"id\"=1) a,(select \"id\",\"bbrq\",\"n1\",\"n2\",\"n3\" from \"t_bb01_tmp\" where \"id\"=2) b" },
+      {"xh":5,"sql":"upsert into \"t_bb01_tmp\"(\"id\",\"bbrq\",\"n1\",\"n2\",\"n3\",\"sid\")  select  NEXT VALUE FOR t_bb01_seq+2,'avg',(a.\"n1\"+b.\"n1\")/2 as n1,(a.\"n2\"+b.\"n2\")/2 as n2,(a.\"n3\"+b.\"n3\")/2 as n3,:sid from (select \"id\",\"bbrq\",\"n1\",\"n2\",\"n3\" from \"t_bb01_tmp\" where \"id\"=1) a,(select \"id\",\"bbrq\",\"n1\",\"n2\",\"n3\" from \"t_bb01_tmp\" where \"id\"=2) b" },
+      {"xh":6,"sql":"create index \"idx_t_bb01_tmp_n1\" on \"t_bb01_tmp\"(\"id\")"}
+  ]
+}

@@ -1,0 +1,71 @@
+create function [dbo].[f_get_table_ddl](
+  @p_tab varchar(100)) returns varchar(4000)
+AS
+BEGIN
+    DECLARE  @colorder int;
+	DECLARE  @name     varchar(100);
+	DECLARE  @type     varchar(100);
+	DECLARE  @len      int;
+	DECLARE  @Scale    int;
+	DECLARE  @key      varchar(2);
+	DECLARE  @sql      varchar(4000);
+
+	DECLARE  cur_tab   cursor for SELECT       									
+									a.colorder 字段序号,
+									a.name 字段名,
+									b.name 类型,
+									COLUMNPROPERTY(a.id,a.name,'PRECISION') as 长度,
+									isnull(COLUMNPROPERTY(a.id,a.name,'Scale'),0) as 小数位,
+									(case when (SELECT count(*)
+										FROM sysobjects
+										WHERE (name in
+												(SELECT name
+												FROM sysindexes
+												WHERE (id = a.id) AND (indid in
+														 (SELECT indid
+														FROM sysindexkeys
+														WHERE (id = a.id) AND (colid in
+																  (SELECT colid
+																   FROM syscolumns
+																  WHERE (id = a.id) AND (name = a.name))))))) AND
+											(xtype = 'PK'))>0 then '√' else '' end) 主键
+							FROM  syscolumns  a 
+							left join systypes b    on a.xtype=b.xusertype
+							inner join sysobjects d on a.id=d.id  and  d.xtype='U' and  d.name<>'dtproperties'
+							left join syscomments e on a.cdefault=e.id
+							left join sys.extended_properties g on a.id=g.major_id AND a.colid = g.major_id
+							where d.id=object_id(@p_tab) -- d.name=@p_tab
+							order by a.id,a.colorder;
+	open cur_tab;
+	fetch next from cur_tab into @colorder ,@name,@type,@len,@Scale,@key
+    set @sql= 'create table '+@p_tab+'(';
+	while @@FETCH_STATUS = 0
+	begin	  
+		if (@type='int' or @type='date')
+	  	  begin
+		   if (@key='√')
+			  set @sql=@sql+'   '+@name+'    '+@type+','
+		   else
+			  set @sql=@sql+'   '+@name+'    '+@type+',';
+          end
+        else if (@type='numeric' or @type='decimal')
+           begin
+		    if (@key='√')
+			   set @sql=@sql+'   '+@name+'    '+@type+'('+ convert(varchar(20),@len)+','+ convert(varchar(20),@Scale)+') ,'
+			else
+			   set @sql=@sql+'   '+@name+'    '+@type+'('+ convert(varchar(20),@len)+','+ convert(varchar(20),@Scale)+'),'
+	       end			 
+        else
+           begin
+			 if (@key='√')
+			   set @sql=@sql+'   '+@name+'    '+@type+'('+ convert(varchar(20),@len)+') ,'
+			else
+			   set @sql=@sql+'   '+@name+'    '+@type+'('+ convert(varchar(20),@len)+'),'
+		   end	   
+		fetch next from cur_tab into @colorder ,@name,@type,@len,@Scale,@key
+	end;
+	set @sql=substring(@sql,1,len(@sql)-1)+')';
+	close cur_tab 
+    deallocate cur_tab 
+	return @sql
+END

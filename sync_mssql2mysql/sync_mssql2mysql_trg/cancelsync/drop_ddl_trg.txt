@@ -1,0 +1,6 @@
+/* 删除数据库DDL触发器,先禁用后删除 */
+if exists(select * from sys.triggers where name='trig_db_ddl_sync')
+begin
+   disable trigger trig_db_ddl_sync on database;
+   drop trigger trig_db_ddl_sync on database;
+end;

@@ -1,0 +1,11 @@
+/* 删除函数：f_get_table_ddl */
+IF EXISTS(SELECT * FROM sysobjects WHERE id =  object_id(N'[dbo].[f_get_table_ddl]') AND xtype = 'FN')
+   DROP FUNCTION dbo.[f_get_table_ddl]
+
+/* 删除函数：f_get_pk_names */
+IF EXISTS(SELECT * FROM sysobjects WHERE id =  object_id(N'[dbo].[f_get_pk_names]') AND xtype = 'FN')
+   DROP FUNCTION dbo.[f_get_pk_names]
+
+/* 删除函数：f_get_pk_vals */
+IF EXISTS(SELECT * FROM sysobjects WHERE id =  object_id(N'[dbo].[f_get_pk_vals]') AND xtype = 'FN')
+   DROP FUNCTION dbo.[f_get_pk_vals]

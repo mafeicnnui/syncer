@@ -1,0 +1,16 @@
+create trigger trig_db_ddl_sync
+ on database for ddl_database_level_events as
+begin
+     SET NOCOUNT ON;
+     DECLARE @data XML;
+     DECLARE @schema sysname;
+     DECLARE @object sysname;
+     DECLARE @eventType sysname;
+     DECLARE @tableHTML NVARCHAR(MAX) ;
+     DECLARE @id int;
+     SET @data = EVENTDATA();
+     SET @object = @data.value('(/EVENT_INSTANCE/ObjectName)[1]', 'sysname')
+     select  @id=isnull(max(id)+1,1) from t_sync_log;
+     insert into t_sync_log(id,tname,pk_name,pk_val,opt,created,tsql,flag)
+        values(@id,@object,null,null,'DDL',getdate(),@data.value('(/EVENT_INSTANCE/TSQLCommand)[1]', 'nvarchar(max)'),'N');
+end

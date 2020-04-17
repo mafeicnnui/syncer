@@ -1,0 +1,24 @@
+create procedure [dbo].[proc_init_tab]
+  @p_tname varchar(100) as
+begin
+ declare @id int;
+ select  @id=isnull(max(id)+1,1) from t_sync_log_init;
+ declare @pk_name varchar(1000);
+ declare @pk_val  varchar(1000); 
+ set @pk_name=dbo.f_get_pk_names(@p_tname);
+ declare @sql nvarchar(1000);
+ set @sql = 'delete from t_sync_log_init where tname='''+@p_tname+'''';
+ exec(@sql)
+ set @sql = 'declare rowCursor cursor for select '+dbo.f_get_pk_vals(@p_tname)+' from ' +@p_tname+'_sync order by '+@pk_name;
+ exec(@sql)
+ OPEN rowCursor; 
+ fetch next from rowCursor into @pk_val;
+ while(@@FETCH_STATUS=0)
+ begin
+    select  @id=isnull(max(id)+1,1) from t_sync_log_init; 
+    insert into t_sync_log_init(id,tname,pk_name,pk_val,opt,created,flag) values(@id,@p_tname,@pk_name,@pk_val,'I',getdate(),'N');
+    fetch next from rowCursor into @pk_val;
+ end;
+ close rowCursor;
+ deallocate rowCursor; 
+end

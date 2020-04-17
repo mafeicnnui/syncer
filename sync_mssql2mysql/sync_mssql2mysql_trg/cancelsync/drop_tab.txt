@@ -1,0 +1,15 @@
+/* 删除表：t_sync_log */
+if exists(select * from sysobjects  where xtype='U' and name='t_sync_log')
+   drop table [dbo].[t_sync_log]
+
+/* 删除表：t_sync_log_init */
+if exists(select * from sysobjects  where xtype='U' and name='t_sync_log_init')
+   drop table [dbo].[t_sync_log_init]
+
+/* 删除表：t_sync_col_mapping */
+if exists(select * from sysobjects  where xtype='U' and name='t_sync_col_mapping')
+   drop table t_sync_col_mapping
+
+/* 删除表：t_sync_tab_mapping */
+if exists(select * from sysobjects  where xtype='U' and name='t_sync_tab_mapping')
+   drop table t_sync_tab_mapping

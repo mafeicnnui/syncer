@@ -1,0 +1,29 @@
+create function [dbo].[f_get_pk_names](@p_tab varchar(100))
+  returns varchar(200) as
+begin	
+	 declare @pk_name  varchar(100);
+	 declare @pk_names varchar(200);
+	 DECLARE cur_tab   cursor for
+						  select
+							col.name
+						  from syscolumns col, sysobjects obj
+						  where col.id=obj.id and  obj.id=object_id(@p_tab) --obj.name=@p_tab 
+						   and (SELECT  1
+								FROM dbo.sysindexes si
+									INNER JOIN dbo.sysindexkeys sik ON si.id = sik.id AND si.indid = sik.indid
+									INNER JOIN dbo.syscolumns sc ON sc.id = sik.id    AND sc.colid = sik.colid
+									INNER JOIN dbo.sysobjects so ON so.name = si.name AND so.xtype = 'PK'
+								WHERE  sc.id = col.id  AND sc.colid = col.colid)=1;
+								
+	open cur_tab;
+	fetch next from cur_tab into @pk_name
+	set @pk_names = '';
+	while @@FETCH_STATUS = 0
+    begin	  
+        set @pk_names = @pk_names+cast(@pk_name as varchar)+','
+		fetch next from cur_tab into @pk_name
+	end;
+	close cur_tab 
+    deallocate cur_tab; 		
+    return substring(@pk_names,0,len(@pk_names));
+ end;
