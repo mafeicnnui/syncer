@@ -122,7 +122,9 @@ def preprocessor(result):
     for key in result:
         if is_valid_datetime(result[key]):
             result[key] = (result[key] + datetime.timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
-    print('preprocessor=',result)
+        else:
+            result[key]=str(result[key])
+    #print('preprocessor=',result)
     return result
 
 '''
@@ -319,7 +321,6 @@ def start_sync(config):
                 id = str(r['_id'])
                 del r['_id']
                 mylist.append({
-                    # "_index": config['db_mongo_db'].lower()+'_'+tab.lower(),
                     "_index": config['db_mongo_db'].lower() ,
                     "_type": tab,
                     "_id": id,
@@ -355,52 +356,45 @@ def init_es(config):
     db_mongodb = config['db_mongo']
     db_name = config['db_mongo_db']
     es=config['db_es']
-    # mappings = {
-    #     "mappings": {
-    #
-    #     }
-    # }
+    d_mappings= {
+        "mappings": {
+            "properties": {
+            }
+        }
+    }
     for e in config['sync_table'].split(","):
         tab = e.split(':')[0]
-        #idx = db_name.lower()+'_'+tab.lower()
-        idx = tab.lower()
-
         cur_mongo = db_mongodb[tab]
         results = cur_mongo.find().limit(1)
         col={}
         for cur in results:
             del cur['_id']
-            # print(cur)
-            # print('cur=', json.dumps(cur, cls=DateEncoder, ensure_ascii=False, indent=4, separators=(',', ':')) + '\n')
             for key in cur:
                 if key not in('_id'):
                     col.update({
                         key: {
                             "type": "text",
-                            "index": True
+                            "fields": {
+                                "keyword": {
+                                    "type": "keyword",
+                                    "ignore_above": 256
+                                }
+                            }
                         }
                     })
-        print('col=',json.dumps(col, cls=DateEncoder, ensure_ascii=False, indent=4, separators=(',', ':')) + '\n')
-
-        mappings={
-            "mappings": {
-                tab: {
-                    "properties": {
-                    }
-                }
-            }
-        }
-        mappings['mappings'][tab]['properties']=col
+        #print('col=',json.dumps(col, cls=DateEncoder, ensure_ascii=False, indent=4, separators=(',', ':')) + '\n')
+        d_mappings['mappings']['properties'].update({tab:col})
         print('>>>mappings=',
-              json.dumps(mappings, cls=DateEncoder, ensure_ascii=False, indent=4, separators=(',', ':')) + '\n')
-    print('mappings=',json.dumps(mappings, cls=DateEncoder, ensure_ascii=False, indent=4, separators=(',', ':')) + '\n')
+              json.dumps(d_mappings, cls=DateEncoder, ensure_ascii=False, indent=4, separators=(',', ':')) + '\n')
+
+    print('mappings=',json.dumps(d_mappings, cls=DateEncoder, ensure_ascii=False, indent=4, separators=(',', ':')) + '\n')
     try:
-      es.indices.create(index=db_name,body =mappings)
-      print('ElasticSearch index {} created!'.format(tab))
+      es.indices.create(index=db_name,body =d_mappings)
+      print('ElasticSearch index {} created!'.format(db_name))
     except:
       print('{} index already exist'.format(db_name))
 
-        #es.indices.create(index=idx,ignore=400)
+
 
 
 
